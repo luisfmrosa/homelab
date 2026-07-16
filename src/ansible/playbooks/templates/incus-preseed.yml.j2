@@ -1,0 +1,25 @@
+config:
+  core.https_address: "{{ incus_https_address }}"
+networks:
+  - name: incusbr0
+    type: bridge
+    config:
+      ipv4.address: auto
+      ipv4.nat: "true"
+      ipv6.address: none
+storage_pools:
+  - name: default
+    driver: btrfs
+    config:
+      source: /var/lib/incus
+profiles:
+  - name: default
+    devices:
+      root:
+        path: /
+        pool: default
+        type: disk
+      eth0:
+        name: eth0
+        network: incusbr0
+        type: nic

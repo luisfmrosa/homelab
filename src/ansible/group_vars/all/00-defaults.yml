@@ -1,0 +1,20 @@
+---
+# Defaults, committed to git. Real per-host values (disk serials) live in
+# the gitignored 01-local.yml in this same directory, which is merged on
+# top of this file (Ansible loads group_vars/all/*.yml alphabetically).
+#
+# Stable by-id paths for the two disks that make up the existing BTRFS
+# RAID1 "naspool" volume. Find the real values on the homelab with:
+#   ls -l /dev/disk/by-id/ | grep -v part
+# Pick the whole-disk entries (not the ones ending in -partN) for the two
+# physical disks that belong to naspool.
+naspool_disks:
+  - /dev/disk/by-id/CHANGEME-disk1
+  - /dev/disk/by-id/CHANGEME-disk2
+
+naspool_mount_point: /naspool
+
+# Address:port the Incus HTTPS API (and its web UI) listens on. 0.0.0.0
+# exposes it on every interface, so it's reachable at
+# https://<homelab-ip>:8443 from the laptop.
+incus_https_address: "0.0.0.0:8443"

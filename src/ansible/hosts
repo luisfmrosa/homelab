@@ -1,0 +1,2 @@
+[myhosts]
+homelab ansible_user=luis

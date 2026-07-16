@@ -1,0 +1,39 @@
+---
+# Mounts the existing BTRFS RAID1 "naspool" volume (already containing data,
+# already configured as RAID1 on disk). This playbook does NOT format,
+# create, or otherwise touch the filesystem contents — it only scans for
+# the multi-device BTRFS filesystem and mounts it, persisting the mount in
+# /etc/fstab via its UUID.
+- name: Mount existing BTRFS RAID1 naspool volume
+  hosts: myhosts
+  become: true
+
+  tasks:
+    - name: Ensure btrfs-progs is installed
+      ansible.builtin.apt:
+        name: btrfs-progs
+        state: present
+        update_cache: true
+
+    - name: Ensure naspool mount point exists
+      ansible.builtin.file:
+        path: "{{ naspool_mount_point }}"
+        state: directory
+        mode: "0755"
+
+    - name: Scan for multi-device btrfs filesystems
+      ansible.builtin.command: btrfs device scan
+      changed_when: false
+
+    - name: Read filesystem UUID of the naspool BTRFS volume
+      ansible.builtin.command: blkid -s UUID -o value {{ naspool_disks[0] }}
+      register: naspool_blkid
+      changed_when: false
+
+    - name: Mount naspool and persist in /etc/fstab
+      ansible.posix.mount:
+        path: "{{ naspool_mount_point }}"
+        src: "UUID={{ naspool_blkid.stdout }}"
+        fstype: btrfs
+        opts: "defaults,device={{ naspool_disks[0] }},device={{ naspool_disks[1] }}"
+        state: mounted

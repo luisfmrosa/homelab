@@ -1,0 +1,2 @@
+# Real per-host values that shouldn't be published (see src/ansible/group_vars/all/00-defaults.yml)
+src/ansible/group_vars/all/01-local.yml

@@ -1,0 +1,113 @@
+---
+# Adds the Zabbly Incus stable apt repository, installs Incus and its
+# web UI (incus-ui-canonical) from it, then performs a one-time
+# non-interactive initialization (btrfs storage pool backed by a
+# dedicated subvolume on the system disk, incusbr0 bridge network, HTTPS
+# API listener) if Incus has not already been initialized on this host.
+# Debian's own repo only ships a plain `incus` package with no separate
+# UI package, so Zabbly's repo is used instead to get incus-ui-canonical.
+- name: Install and configure Incus with web UI
+  hosts: myhosts
+  become: true
+
+  tasks:
+    - name: Ensure /etc/apt/keyrings exists
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: "0755"
+
+    - name: Add the Zabbly apt signing key
+      ansible.builtin.get_url:
+        url: https://pkgs.zabbly.com/key.asc
+        dest: /etc/apt/keyrings/zabbly.asc
+        mode: "0644"
+
+    - name: Add the Zabbly Incus stable apt repository
+      ansible.builtin.template:
+        src: zabbly-incus-stable.sources.j2
+        dest: /etc/apt/sources.list.d/zabbly-incus-stable.sources
+        mode: "0644"
+
+    - name: Ensure Incus and its web UI are installed from Zabbly
+      ansible.builtin.apt:
+        name:
+          - incus
+          - incus-client
+          - incus-ui-canonical
+        state: present
+        update_cache: true
+
+    - name: Ensure {{ ansible_user }} is in the incus-admin group
+      ansible.builtin.user:
+        name: "{{ ansible_user }}"
+        groups: incus-admin
+        append: true
+
+    - name: Ensure the Incus service is enabled and running
+      ansible.builtin.systemd:
+        name: incus.service
+        enabled: true
+        state: started
+
+    - name: Check whether Incus has already been initialized
+      ansible.builtin.command: incus storage list -f json
+      register: incus_storage_pools
+      changed_when: false
+
+    - name: Check whether /var/lib/incus is already a BTRFS subvolume
+      ansible.builtin.command: btrfs subvolume show /var/lib/incus
+      register: incus_subvolume_check
+      changed_when: false
+      failed_when: false
+      when: (incus_storage_pools.stdout | from_json | length) == 0
+
+    - name: Stop Incus before converting its data directory to a BTRFS subvolume
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        state: stopped
+      loop:
+        - incus.socket
+        - incus.service
+      when:
+        - (incus_storage_pools.stdout | from_json | length) == 0
+        - incus_subvolume_check.rc != 0
+
+    - name: Discard Incus's not-yet-initialized data directory
+      ansible.builtin.file:
+        path: /var/lib/incus
+        state: absent
+      when:
+        - (incus_storage_pools.stdout | from_json | length) == 0
+        - incus_subvolume_check.rc != 0
+
+    - name: Create a dedicated BTRFS subvolume for Incus storage
+      ansible.builtin.command: btrfs subvolume create /var/lib/incus
+      when:
+        - (incus_storage_pools.stdout | from_json | length) == 0
+        - incus_subvolume_check.rc != 0
+
+    - name: Ensure the Incus service is running again
+      ansible.builtin.systemd:
+        name: incus.service
+        state: started
+      when:
+        - (incus_storage_pools.stdout | from_json | length) == 0
+        - incus_subvolume_check.rc != 0
+
+    - name: Initialize Incus (preseed)
+      ansible.builtin.command: incus admin init --preseed
+      args:
+        stdin: "{{ lookup('template', 'incus-preseed.yml.j2') }}"
+      when: (incus_storage_pools.stdout | from_json | length) == 0
+
+    - name: Check whether the docker remote is already configured
+      ansible.builtin.command: incus remote list -f json
+      become_user: "{{ ansible_user }}"
+      register: incus_remotes
+      changed_when: false
+
+    - name: Add the Docker Hub OCI remote
+      ansible.builtin.command: incus remote add docker https://docker.io --protocol=oci
+      become_user: "{{ ansible_user }}"
+      when: "'docker' not in (incus_remotes.stdout | from_json)"
