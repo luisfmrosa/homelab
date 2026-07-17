@@ -101,6 +101,30 @@
         stdin: "{{ lookup('template', 'incus-preseed.yml.j2') }}"
       when: (incus_storage_pools.stdout | from_json | length) == 0
 
+    - name: Read the current Incus HTTPS API address
+      ansible.builtin.command: incus config get core.https_address
+      register: incus_https_address_current
+      changed_when: false
+
+    - name: Activate the Incus HTTPS API
+      ansible.builtin.command: incus config set core.https_address {{ incus_https_address }}
+      when: incus_https_address_current.stdout != incus_https_address
+
+    - name: Check whether the laptop client is already trusted
+      ansible.builtin.command: incus config trust list -f json
+      register: incus_trusts
+      changed_when: false
+
+    - name: Generate a one-time trust token for adding the laptop as a remote client
+      ansible.builtin.command: incus config trust add "{{ ansible_user }}-client"
+      register: incus_trust_token
+      when: "'{{ ansible_user }}-client' not in (incus_trusts.stdout | from_json | map(attribute='name') | list)"
+
+    - name: Show the trust token (use it with 'incus remote add' from a client)
+      ansible.builtin.debug:
+        msg: "{{ incus_trust_token.stdout }}"
+      when: incus_trust_token is not skipped
+
     - name: Check whether the docker remote is already configured
       ansible.builtin.command: incus remote list -f json
       become_user: "{{ ansible_user }}"
@@ -111,3 +135,13 @@
       ansible.builtin.command: incus remote add docker https://docker.io --protocol=oci
       become_user: "{{ ansible_user }}"
       when: "'docker' not in (incus_remotes.stdout | from_json)"
+
+    - name: Add the GitHub Container Registry OCI remote
+      ansible.builtin.command: incus remote add ghcr https://ghcr.io --protocol=oci
+      become_user: "{{ ansible_user }}"
+      when: "'ghcr' not in (incus_remotes.stdout | from_json)"
+
+    - name: Add the GitLab Container Registry OCI remote
+      ansible.builtin.command: incus remote add gitlab https://registry.gitlab.com --protocol=oci
+      become_user: "{{ ansible_user }}"
+      when: "'gitlab' not in (incus_remotes.stdout | from_json)"

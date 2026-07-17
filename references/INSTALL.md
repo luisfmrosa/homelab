@@ -295,4 +295,55 @@ homelab | SUCCESS => {
 
 If you had the output above, all is good!
 
+### 5. Install incus client and incus-compose on Windows
+
+#### Step 1. Install ```incus```
+
+``` Powershell
+winget install LinuxContainers.Incus
+```
+
+Test if all is ok:
+
+``` Powershell
+incus --version
+```
+
+#### Step 2. Install  ```incus-compose```
+
+``` Powershell
+# 1. Search the folder where Winget installed incus.exe
+$IncusPath = Split-Path (Get-Command incus.exe).Source
+
+# 2. Download incus-compose archive using curl
+curl.exe -L "https://github.com/lxc/incus-compose/releases/download/v1.0.0/incus-compose_1.0.0_windows_amd64.tar.gz" -o "$env:USERPROFILE\Downloads\incus-compose.tar.gz"
+
+# 3. Extract executable directly into the incus folder
+tar.exe -xf "$env:USERPROFILE\Downloads\incus-compose.tar.gz" -C "$IncusPath" incus-compose.exe
+
+# 4. Clean up the archive from Downloads
+Remove-Item "$env:USERPROFILE\Downloads\incus-compose.tar.gz"
+```
+
+Test if all is ok:
+
+``` Powershell
+incus-compose version
+```
+
+#### Step 3. Add homelab as a remote and set it as default
+
+The `src/ansible/playbooks/incus.yml` playbook generates a one-time trust token the first time it runs on a host with no trusted clients yet, and prints it in the Ansible output (see `references/ANSIBLE.md`). Copy that token, then on the Windows laptop add the remote using it and switch to it:
+
+``` Powershell
+incus remote add homelab https://<homelab-ip>:8443 --token <paste-token-here>
+incus remote switch homelab
+```
+
+If you need a new token later (e.g. the first one expired or you already have a trusted client and need to trust another), generate one manually on the homelab instead:
+
+``` bash
+incus config trust add
+```
+
 **END**
