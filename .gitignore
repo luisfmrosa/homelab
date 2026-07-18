@@ -1,2 +1,12 @@
 # Real per-host values that shouldn't be published (see src/ansible/group_vars/all/00-defaults.yml)
 src/ansible/group_vars/all/01-local.yml
+
+# Real per-host values for incus-compose (SSH public key, etc.) - see src/incus-compose/.env.example
+src/incus-compose/.env
+
+# OpenTofu local state, secrets, and working directories
+src/opentofu/.terraform/
+src/opentofu/.terraform.lock.hcl
+src/opentofu/terraform.tfstate
+src/opentofu/terraform.tfstate.backup
+src/opentofu/terraform.tfvars

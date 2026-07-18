@@ -2,10 +2,12 @@
 # Adds the Zabbly Incus stable apt repository, installs Incus and its
 # web UI (incus-ui-canonical) from it, then performs a one-time
 # non-interactive initialization (btrfs storage pool backed by a
-# dedicated subvolume on the system disk, incusbr0 bridge network, HTTPS
-# API listener) if Incus has not already been initialized on this host.
-# Debian's own repo only ships a plain `incus` package with no separate
-# UI package, so Zabbly's repo is used instead to get incus-ui-canonical.
+# dedicated subvolume at /var/lib/incus-pool on the system disk,
+# entirely separate from /var/lib/incus itself; incusbr0 bridge network;
+# HTTPS API listener) if Incus has not already been initialized on this
+# host. Debian's own repo only ships a plain `incus` package with no
+# separate UI package, so Zabbly's repo is used instead to get
+# incus-ui-canonical.
 - name: Install and configure Incus with web UI
   hosts: myhosts
   become: true
@@ -55,42 +57,22 @@
       register: incus_storage_pools
       changed_when: false
 
-    - name: Check whether /var/lib/incus is already a BTRFS subvolume
-      ansible.builtin.command: btrfs subvolume show /var/lib/incus
+    - name: Check whether the storage pool subvolume already exists
+      ansible.builtin.command: btrfs subvolume show /var/lib/incus-pool
       register: incus_subvolume_check
       changed_when: false
       failed_when: false
       when: (incus_storage_pools.stdout | from_json | length) == 0
 
-    - name: Stop Incus before converting its data directory to a BTRFS subvolume
-      ansible.builtin.systemd:
-        name: "{{ item }}"
-        state: stopped
-      loop:
-        - incus.socket
-        - incus.service
-      when:
-        - (incus_storage_pools.stdout | from_json | length) == 0
-        - incus_subvolume_check.rc != 0
-
-    - name: Discard Incus's not-yet-initialized data directory
-      ansible.builtin.file:
-        path: /var/lib/incus
-        state: absent
-      when:
-        - (incus_storage_pools.stdout | from_json | length) == 0
-        - incus_subvolume_check.rc != 0
-
-    - name: Create a dedicated BTRFS subvolume for Incus storage
-      ansible.builtin.command: btrfs subvolume create /var/lib/incus
-      when:
-        - (incus_storage_pools.stdout | from_json | length) == 0
-        - incus_subvolume_check.rc != 0
-
-    - name: Ensure the Incus service is running again
-      ansible.builtin.systemd:
-        name: incus.service
-        state: started
+    # The pool's source must be a location entirely separate from /var/lib/incus
+    # (Incus's own data/state directory), not nested under it. Nesting the pool
+    # under /var/lib/incus (even as its own subvolume, e.g.
+    # /var/lib/incus/storage-pools/default) causes Incus to bind-mount that
+    # subvolume a second time inside itself, aliasing the daemon's own database/
+    # certs/sockets into the pool path and corrupting things. See
+    # incus-preseed.yml.j2.
+    - name: Create a dedicated BTRFS subvolume for the default storage pool
+      ansible.builtin.command: btrfs subvolume create /var/lib/incus-pool
       when:
         - (incus_storage_pools.stdout | from_json | length) == 0
         - incus_subvolume_check.rc != 0
@@ -118,7 +100,7 @@
     - name: Generate a one-time trust token for adding the laptop as a remote client
       ansible.builtin.command: incus config trust add "{{ ansible_user }}-client"
       register: incus_trust_token
-      when: "'{{ ansible_user }}-client' not in (incus_trusts.stdout | from_json | map(attribute='name') | list)"
+      when: (ansible_user ~ '-client') not in (incus_trusts.stdout | from_json | map(attribute='name') | list)
 
     - name: Show the trust token (use it with 'incus remote add' from a client)
       ansible.builtin.debug:

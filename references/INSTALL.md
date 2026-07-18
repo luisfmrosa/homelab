@@ -346,4 +346,30 @@ If you need a new token later (e.g. the first one expired or you already have a 
 incus config trust add
 ```
 
+### 6. Install and configure OpenTofu on Windows
+
+OpenTofu talks directly to the Incus daemon's HTTPS API using the same client trust (certificate) already set up for the `incus`/`incus-compose` CLIs in step 5 — nothing needs to be installed on the homelab itself, and no SSH is involved.
+
+#### Step 1. Install ```tofu```
+
+``` Powershell
+winget install OpenTofu.Tofu
+```
+
+Test if all is ok:
+
+``` Powershell
+tofu --version
+```
+
+#### Step 2. Verify it can reach the homelab remote
+
+The `lxc/incus` OpenTofu provider (declared in `src/opentofu/`) picks up the trusted `homelab` remote from the same Incus client config used by `incus`/`incus-compose` (`%USERPROFILE%\.config\incus\`), so as long as step 5's remote is already added and trusted, no separate provider-side login is needed.
+
+``` Powershell
+cd src/opentofu
+tofu init
+tofu plan
+```
+
 **END**

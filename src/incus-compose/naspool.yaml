@@ -1,0 +1,24 @@
+# Superseded by src/opentofu/naspool.tf. incus-compose refuses bind mounts
+# (like /naspool below) over a remote HTTPS connection as a same-host safety
+# check, and this repo doesn't run incus-compose locally on the homelab, so
+# this file cannot actually be applied as-is. Kept for reference in case
+# incus-compose ends up installed directly on the homelab later.
+name: naspool
+
+services:
+  naspool:
+    image: images:debian/12
+    restart: always
+    volumes:
+      - /naspool:/naspool
+    x-incus:
+      cloud-init.user-data: |
+        #cloud-config
+        users:
+          - name: ${SSH_USER}
+            groups: sudo
+            shell: /bin/bash
+            sudo: ALL=(ALL) NOPASSWD:ALL
+            ssh_authorized_keys:
+              - ${SSH_PUBLIC_KEY}
+        ssh_pwauth: false
