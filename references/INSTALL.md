@@ -470,7 +470,7 @@ ansible-playbook -i src/ansible/hosts src/ansible/playbooks/headscale.yml
 
 Node registration itself is **not** automated — a device needs an interactive nodekey or pre-auth key at enrollment time. To add a device (e.g. a smartphone) manually:
 
-1. Install the Tailscale app on the device and set its coordination/login server to `https://<headscale-domain>` (exact field name varies by platform — look for "custom control server" or "alternate coordination server").
+1. Install the Tailscale app on the device and set its coordination/login server to `https://<mydomain>.duckdns.org` (exact field name varies by platform — look for "custom control server" or "alternate coordination server").
 2. Start the login flow on the device; it will produce a pending registration.
 3. Approve it from the homelab, e.g. via WSL:
    ```bash
