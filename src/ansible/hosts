@@ -1,2 +1,10 @@
 [myhosts]
 homelab ansible_user=luis
+
+[headscale_hosts]
+# Connects via the community.general.incus connection plugin (`incus exec`
+# against the trusted "homelab" remote), not SSH — the container has no SSH
+# server and no non-root user. Requires the incus CLI installed and trusted
+# in WSL/Ubuntu itself (separate from the Windows-side incus CLI), see
+# references/INSTALL.md.
+headscale ansible_connection=community.general.incus ansible_incus_remote=homelab ansible_incus_host=headscale

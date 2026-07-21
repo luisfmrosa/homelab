@@ -270,7 +270,42 @@ Test a SSH connection to the homelab: it should be done without asking for passw
 ssh luis@homelab
 ```
 
-#### Step 4: quick Ansible test
+#### Step 4: install the incus client in WSL and trust the homelab remote
+
+Some playbooks (e.g. `src/ansible/playbooks/headscale.yml`) connect to Incus instances directly via `incus exec`, using Ansible's `community.general.incus` connection plugin, instead of SSH. Since `ansible-playbook` itself runs from WSL/Ubuntu, WSL needs its own working `incus` CLI trusted against the `homelab` remote — separate from the Windows-side `incus` CLI installed in step 5 below, which lives in a different config location and isn't visible from WSL.
+
+```bash
+# Install the incus client in WSL/Ubuntu
+sudo apt update
+sudo apt install -y incus-client
+```
+
+Test if all is ok:
+
+```bash
+incus --version
+```
+
+Generate a trust token on the homelab (reuses the same one-time-token mechanism as the Windows-side remote in step 5 — see `references/ANSIBLE.md` for how `incus.yml` generates one automatically on first run, or generate a fresh one manually):
+
+```bash
+ssh luis@homelab "incus config trust add"
+```
+
+Copy the printed token, then add and switch to the remote from WSL:
+
+```bash
+incus remote add homelab https://homelab:8443 --token <paste-token-here>
+incus remote switch homelab
+```
+
+Test it can reach the instance list:
+
+```bash
+incus list
+```
+
+#### Step 5: quick Ansible test
 
 Create the file ```hosts```:
 
@@ -371,5 +406,51 @@ cd src/opentofu
 tofu init
 tofu plan
 ```
+
+### Force a static IPv6 on the Router:
+
+1. add a static IPv6 on the router for the homelab.
+
+2. modify `/etc/dhcpcd.conf` and add the following block at the end:
+```
+# Request a full stateful DHCPv6 lease for wlo1
+interface wlo1
+ia_na 1
+```
+
+3. restart the network interface: `sudo systemctl restart networking`
+
+4. confirm the additional, static IPv6 appears: `ip -6 addr show wlo1`
+
+### headscale
+
+Manual steps needed on top of `src/opentofu/headscale.tf` and `src/ansible/playbooks/headscale.yml` (see `references/OPENTOFU.md` and `references/ANSIBLE.md`) — things a router UI or a third-party DNS provider that Ansible/OpenTofu can't reach.
+
+The container sits on the default NAT'd `incusbr0` bridge (not directly on the router's network) — a `macvlan` NIC on the homelab's physical `wlo1` was tried first, so the container could get its own IPv6 directly from the router, but **macvlan doesn't work reliably over WiFi**: the container had a global IPv6 address and a default route, but zero actual reachability (ping and DNS both hung indefinitely), because WiFi access points generally only accept traffic for the one MAC they associated with — a second virtual MAC riding the same radio gets silently dropped. `headscale.tf` instead forwards the needed ports from the **homelab host's own** address to the container via Incus `proxy` devices, so the firewall rule and DNS both point at the homelab host itself, not the container.
+
+#### Step 1: find the homelab host's IPv6
+
+```bash
+ssh luis@homelab "ip -6 addr show wlo1"
+```
+
+Use the `global` address shown (not the `fe80::...` link-local one) — the same one already used for the homelab host's own DNS entry (see "Static IP and DNS configurations" above).
+
+#### Step 2: add a router firewall rule allowing external access to headscale's ports
+
+Forward/allow the following from the internet to the **homelab host's** IPv6 (not the container's — Incus `proxy` devices on `headscale.tf` forward from the host into the container):
+
+```
+443/tcp  -> homelab host IPv6  (Caddy: HTTPS + headscale API)
+80/tcp   -> homelab host IPv6  (Caddy: ACME HTTP-01 challenge)
+3478/udp -> homelab host IPv6  (embedded DERP STUN)
+```
+
+#### Step 3: create/update the DuckDNS domain
+
+1. On https://www.duckdns.org, sign in and point the domain (already registered: `<headscale-domain>`) at the homelab host's IPv6 from Step 1 (DuckDNS supports an AAAA-only update — see their site for the exact update URL/token).
+2. If the domain name ever changes, update it in these files:
+   * `src/ansible/group_vars/all/00-defaults.yml` — `headscale_domain`
+   * Re-run `ansible-playbook -i src/ansible/hosts src/ansible/playbooks/headscale.yml` to regenerate the Caddyfile and headscale `config.yaml` (`server_url`, `dns.base_domain`) from the new value and re-issue the Let's Encrypt certificate.
 
 **END**

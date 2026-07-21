@@ -83,6 +83,29 @@
         stdin: "{{ lookup('template', 'incus-preseed.yml.j2') }}"
       when: (incus_storage_pools.stdout | from_json | length) == 0
 
+    - name: Check whether the incusbr0 network already exists
+      ansible.builtin.command: incus network list -f json
+      register: incus_networks
+      changed_when: false
+
+    # Guards independently of the storage-pool check above, since preseed
+    # init only runs once ever (skipped once a storage pool already exists
+    # from an earlier partial run) — without this, a host that got its
+    # storage pool created but never its network (as happened in practice)
+    # would be stuck with no bridge forever.
+    - name: Create the incusbr0 bridge network
+      ansible.builtin.command: incus network create incusbr0
+      when: "'incusbr0' not in (incus_networks.stdout | from_json | map(attribute='name') | list)"
+
+    - name: Check whether the default profile already has an eth0 device
+      ansible.builtin.command: incus profile show default
+      register: incus_default_profile
+      changed_when: false
+
+    - name: Add the eth0 nic device to the default profile
+      ansible.builtin.command: incus profile device add default eth0 nic network=incusbr0
+      when: "'eth0' not in (incus_default_profile.stdout | from_yaml).devices"
+
     - name: Read the current Incus HTTPS API address
       ansible.builtin.command: incus config get core.https_address
       register: incus_https_address_current

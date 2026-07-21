@@ -1,0 +1,10 @@
+# Managed by Ansible (src/ansible/playbooks/headscale.yml). Manual edits
+# will be overwritten on the next playbook run.
+#
+# Caddy terminates TLS for {{ headscale_domain }}, obtaining and renewing
+# its Let's Encrypt certificate automatically (ACME HTTP-01 challenge on
+# port 80, both ports forwarded on the router — see references/INSTALL.md),
+# and reverse-proxies everything to headscale's plain-HTTP listener.
+{{ headscale_domain }} {
+    reverse_proxy 127.0.0.1:8080
+}

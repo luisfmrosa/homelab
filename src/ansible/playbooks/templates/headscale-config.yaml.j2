@@ -1,0 +1,53 @@
+---
+# Managed by Ansible (src/ansible/playbooks/headscale.yml). Manual edits
+# will be overwritten on the next playbook run.
+
+server_url: https://{{ headscale_domain }}
+listen_addr: 127.0.0.1:8080
+metrics_listen_addr: 127.0.0.1:9090
+grpc_listen_addr: 127.0.0.1:50443
+grpc_allow_insecure: false
+
+database:
+  type: sqlite
+  sqlite:
+    path: /var/lib/headscale/db.sqlite
+
+noise:
+  private_key_path: /var/lib/headscale/noise_private.key
+
+prefixes:
+  v4: 100.64.0.0/10
+  v6: fd7a:115c:a1e0::/48
+
+derp:
+  server:
+    enabled: true
+    region_id: 999
+    region_code: "headscale"
+    region_name: "Headscale Embedded DERP"
+    stun_listen_addr: "0.0.0.0:{{ headscale_derp_stun_port }}"
+    private_key_path: /var/lib/headscale/derp_server_private.key
+    automatically_add_embedded_derp_region: true
+  urls: []
+  paths: []
+  auto_update_enabled: true
+  update_frequency: 24h
+
+disable_check_updates: false
+ephemeral_node_inactivity_timeout: 30m
+
+log:
+  format: text
+  level: info
+
+dns:
+  magic_dns: true
+  base_domain: headscale.{{ headscale_domain }}
+  nameservers:
+    global:
+      - 1.1.1.1
+      - 8.8.8.8
+
+unix_socket: /var/run/headscale/headscale.sock
+unix_socket_permission: "0770"

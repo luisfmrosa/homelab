@@ -1,0 +1,107 @@
+---
+# Installs and configures the headscale controller (Tailscale-compatible
+# control plane) with its embedded DERP relay, and Caddy in front of it as
+# a reverse proxy handling Let's Encrypt TLS automatically. Targets the
+# "headscale" Incus instance created by src/opentofu/headscale.tf, connected
+# to via the community.general.incus connection plugin (`incus exec` against
+# the trusted "homelab" remote, as root) instead of SSH — the container has
+# no SSH server and no non-root user, see src/ansible/hosts and
+# references/INSTALL.md for the WSL-side incus CLI setup this requires.
+# Manual, one-off steps this playbook cannot reach (router IPv6/firewall,
+# DuckDNS) are documented in references/INSTALL.md.
+- name: Install and configure headscale with Caddy
+  hosts: headscale_hosts
+
+  tasks:
+    - name: Ensure the apt package index is up to date
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Ensure python3-debian is installed (required by deb822_repository)
+      ansible.builtin.apt:
+        name: python3-debian
+        state: present
+
+    - name: Ensure /etc/apt/keyrings exists
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: "0755"
+
+    - name: Add the Caddy apt signing key
+      ansible.builtin.get_url:
+        url: https://dl.cloudsmith.io/public/caddy/stable/gpg.key
+        dest: /etc/apt/keyrings/caddy.asc
+        mode: "0644"
+
+    - name: Add the Caddy stable apt repository
+      ansible.builtin.deb822_repository:
+        name: caddy-stable
+        types: deb
+        uris: https://dl.cloudsmith.io/public/caddy/stable/deb/debian
+        suites: any-version
+        components: main
+        signed_by: /etc/apt/keyrings/caddy.asc
+        state: present
+
+    - name: Ensure Caddy is installed
+      ansible.builtin.apt:
+        name: caddy
+        state: present
+        update_cache: true
+
+    - name: Deploy the Caddyfile
+      ansible.builtin.template:
+        src: Caddyfile.j2
+        dest: /etc/caddy/Caddyfile
+        mode: "0644"
+      notify: Reload Caddy
+
+    - name: Check the currently installed headscale version
+      ansible.builtin.command: headscale version
+      register: headscale_version_check
+      changed_when: false
+      failed_when: false
+
+    - name: Download the pinned headscale .deb package
+      ansible.builtin.get_url:
+        url: "https://github.com/juanfont/headscale/releases/download/v{{ headscale_version }}/headscale_{{ headscale_version }}_linux_amd64.deb"
+        dest: "/tmp/headscale_{{ headscale_version }}_linux_amd64.deb"
+        mode: "0644"
+      when: headscale_version not in headscale_version_check.stdout
+
+    - name: Install headscale from the downloaded .deb
+      ansible.builtin.apt:
+        deb: "/tmp/headscale_{{ headscale_version }}_linux_amd64.deb"
+      when: headscale_version not in headscale_version_check.stdout
+
+    - name: Ensure the headscale config directory exists
+      ansible.builtin.file:
+        path: /etc/headscale
+        state: directory
+        mode: "0755"
+
+    - name: Deploy the headscale configuration
+      ansible.builtin.template:
+        src: headscale-config.yaml.j2
+        dest: /etc/headscale/config.yaml
+        mode: "0644"
+      notify: Restart headscale
+
+    - name: Ensure the headscale service is enabled and running
+      ansible.builtin.systemd:
+        name: headscale.service
+        enabled: true
+        state: started
+
+  handlers:
+    - name: Reload Caddy
+      ansible.builtin.systemd:
+        name: caddy.service
+        state: reloaded
+
+    - name: Restart headscale
+      ansible.builtin.systemd:
+        name: headscale.service
+        state: restarted
