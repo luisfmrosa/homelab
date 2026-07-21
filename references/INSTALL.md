@@ -453,4 +453,28 @@ Forward/allow the following from the internet to the **homelab host's** IPv6 (no
    * `src/ansible/group_vars/all/00-defaults.yml` — `headscale_domain`
    * Re-run `ansible-playbook -i src/ansible/hosts src/ansible/playbooks/headscale.yml` to regenerate the Caddyfile and headscale `config.yaml` (`server_url`, `dns.base_domain`) from the new value and re-issue the Let's Encrypt certificate.
 
+#### Step 4: create headscale users
+
+User creation is automated by `headscale.yml` (see `references/ANSIBLE.md`). Add the usernames you want to `headscale_users` in the gitignored `src/ansible/group_vars/all/01-local.yml` (created for `naspool_disks`, see Step 2 in the main setup above), e.g.:
+
+```yaml
+headscale_users:
+  - luis
+```
+
+Then re-run:
+
+```bash
+ansible-playbook -i src/ansible/hosts src/ansible/playbooks/headscale.yml
+```
+
+Node registration itself is **not** automated — a device needs an interactive nodekey or pre-auth key at enrollment time. To add a device (e.g. a smartphone) manually:
+
+1. Install the Tailscale app on the device and set its coordination/login server to `https://<headscale-domain>` (exact field name varies by platform — look for "custom control server" or "alternate coordination server").
+2. Start the login flow on the device; it will produce a pending registration.
+3. Approve it from the homelab, e.g. via WSL:
+   ```bash
+   incus exec headscale --remote homelab -- headscale nodes register --user <username> --key <nodekey-shown-by-the-app>
+   ```
+
 **END**

@@ -34,3 +34,8 @@ headscale_derp_stun_port: 3478
 # .deb published on the GitHub releases page). Bump deliberately and re-run
 # the playbook to upgrade: https://github.com/juanfont/headscale/releases
 headscale_version: "0.23.0"
+
+# Headscale users to create (namespaces that tailnet nodes register under).
+# Override this list in the gitignored 01-local.yml with your real usernames
+# — kept out of git since it's personal/account data, not infrastructure.
+headscale_users: []

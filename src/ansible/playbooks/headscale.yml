@@ -9,6 +9,9 @@
 # references/INSTALL.md for the WSL-side incus CLI setup this requires.
 # Manual, one-off steps this playbook cannot reach (router IPv6/firewall,
 # DuckDNS) are documented in references/INSTALL.md.
+# Also creates the headscale users listed in the headscale_users variable
+# (real values in the gitignored group_vars/all/01-local.yml). Node
+# registration itself stays manual — see references/INSTALL.md.
 - name: Install and configure headscale with Caddy
   hosts: headscale_hosts
 
@@ -94,6 +97,16 @@
         name: headscale.service
         enabled: true
         state: started
+
+    - name: Check the currently existing headscale users
+      ansible.builtin.command: headscale users list -o json
+      register: headscale_users_check
+      changed_when: false
+
+    - name: Create the configured headscale users
+      ansible.builtin.command: "headscale users create {{ item }}"
+      loop: "{{ headscale_users }}"
+      when: item not in (headscale_users_check.stdout | from_json | map(attribute='name') | list)
 
   handlers:
     - name: Reload Caddy
