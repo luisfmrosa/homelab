@@ -226,7 +226,7 @@ We will save your answer to Windows and will only ask you once.
 
 Would you like to opt-in to platform metrics collection (Y/n)? To see an example of the data collected, enter 'e'.
 [Y/n/e]: n
-falec@LFMR-HP-W11:/mnt/c/Users/falec$
+user@laptop:/mnt/c/Users/falec$
 ```
 
 #### Step 2: Install Ansible inside Ubuntu (WSL):
@@ -317,7 +317,7 @@ homelab ansible_user=luis
 Test if ansible finds it:
 
 ```bash
-falec@LFMR-HP-W11:/mnt/c/Users/falec/Documents/Claude/Projects/homelab/scripts/ansible$ ansible myhosts -i hosts -m ping
+user@laptop:/mnt/c/Users/falec/Documents/Claude/Projects/homelab/scripts/ansible$ ansible myhosts -i hosts -m ping
 [WARNING]: Host 'homelab' is using the discovered Python interpreter at '/usr/bin/python3.13', but future installation of another Python interpreter could cause a different interpreter to be discovered. See https://docs.ansible.com/ansible-core/2.21/reference_appendices/interpreter_discovery.html for more information.
 homelab | SUCCESS => {
     "ansible_facts": {
