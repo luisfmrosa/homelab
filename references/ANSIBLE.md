@@ -9,6 +9,7 @@ This document describes what is configured in the homelab using Ansible.
 2. ~~Install incus~~ — done, see `src/ansible/playbooks/incus.yml`
 3. ~~Install and configure headscale (Caddy + Let's Encrypt + embedded DERP)~~ — done, see `src/ansible/playbooks/headscale.yml`.
 4. ~~Install and configure headplane (the web UI)~~ — done, see `src/ansible/playbooks/headplane.yml`.
+5. ~~Enrol the homelab host itself on the tailnet (so the Incus web UI is reachable over the VPN)~~ — done, see `src/ansible/playbooks/tailscale.yml`.
 
 ## Playbooks
 
@@ -46,6 +47,13 @@ This document describes what is configured in the homelab using Ansible.
   * Runs via a generated systemd unit (template: `src/ansible/playbooks/templates/headplane.service.j2`) on port `headplane_port` (currently `3000`, loopback only), with `After=`/`Requires=headscale.service`.
   * The shared Caddyfile (template: `src/ansible/playbooks/templates/Caddyfile.j2`, also deployed by this playbook) routes `/admin/*` to headplane and everything else to headscale's own API, on the same domain/certificate — no new DNS/firewall changes needed.
   * Run with: `ansible-playbook -i src/ansible/hosts src/ansible/playbooks/headplane.yml` (after `headscale.yml`). Reachable at `https://<headscale_domain>/admin`; log in using the value in `/etc/headplane/api_key` (`incus exec headscale -- cat /etc/headplane/api_key`).
+
+* `src/ansible/playbooks/tailscale.yml` — targets `[myhosts]` (the homelab host itself, over SSH, `become: true`), not the `headscale` container. Enrols the homelab host as a tailnet node so that services bound only to the host's own interfaces — chiefly the Incus HTTPS API/web UI (`incus_https_address`, currently `0.0.0.0:8443`, see `incus.yml`) — become reachable from any other device on the tailnet, without opening anything new on the router or changing `incus_https_address` itself (LAN reachability is kept, not replaced).
+  * Installs the official Tailscale client from its own apt repo (signing key + deb822 `.sources` file, same idiom as Caddy's and Incus's repo setup in `headscale.yml`/`incus.yml`), keyed off `ansible_distribution_release` so it tracks whatever Debian codename the host actually runs.
+  * Registers the host non-interactively: generates a short-lived (10 minute) headscale preauth key for the `tailscale_headscale_user` user (`group_vars/all/00-defaults.yml`, currently `luis` — must be a name already listed in `headscale_users`) by delegating that one task to the `headscale` host (`delegate_to: headscale`, `become: false`, since that host connects as root via `incus exec` already), then runs `tailscale up --login-server=https://{{ headscale_domain }} --authkey=...` on the homelab host itself. Both steps are guarded by `tailscale status --json`'s `BackendState` so re-running the playbook is a no-op once already enrolled (a preauth key can only be used once, so this guard matters — re-running it against an already-enrolled host without the guard would waste a key generation call).
+  * No exit-node flags are set (`--advertise-exit-node`, `--exit-node`) — this tailnet doesn't route general client (e.g. phone) traffic through the homelab; nodes just need normal outbound internet access for their own updates, which they already have.
+  * Run with: `ansible-playbook -i src/ansible/hosts src/ansible/playbooks/tailscale.yml -K` (needs `-K` for sudo on the homelab host itself, same as `incus.yml`/`naspool.yml`). Requires `headscale.yml` to have already run (needs a working headscale API and the `tailscale_headscale_user` to already exist as a headscale user).
+  * After running, the Incus web UI is reachable at `https://<homelab-tailnet-ip>:8443` from any other tailnet-enrolled device — find the tailnet IP with `incus exec headscale -- headscale nodes list` or `tailscale ip` on the homelab host itself.
 
 ### Renewing the headplane API key
 

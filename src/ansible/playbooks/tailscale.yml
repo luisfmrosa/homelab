@@ -1,0 +1,78 @@
+---
+# Enrolls the homelab host itself as a tailnet node, so that services bound
+# only to the host's own interfaces (like the Incus HTTPS API/web UI, see
+# incus.yml and incus_https_address) become reachable from any other
+# enrolled device without opening anything on the router/LAN. Installs the
+# official Tailscale client from its own apt repo, then registers it against
+# our headscale controller (running in the "headscale" Incus instance, see
+# headscale.yml) using a one-time preauth key generated there.
+# incus_https_address stays "0.0.0.0:8443" (LAN reachability is kept
+# alongside tailnet reachability, not replaced by it) — see 00-defaults.yml.
+- name: Enrol the homelab host on the tailnet
+  hosts: myhosts
+  become: true
+
+  tasks:
+    - name: Ensure /etc/apt/keyrings exists
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: "0755"
+
+    - name: Add the Tailscale apt signing key
+      ansible.builtin.get_url:
+        url: "https://pkgs.tailscale.com/stable/debian/{{ ansible_facts['distribution_release'] }}.noarmor.gpg"
+        dest: /etc/apt/keyrings/tailscale.asc
+        mode: "0644"
+
+    - name: Add the Tailscale stable apt repository
+      ansible.builtin.deb822_repository:
+        name: tailscale-stable
+        types: deb
+        uris: "https://pkgs.tailscale.com/stable/debian"
+        suites: "{{ ansible_facts['distribution_release'] }}"
+        components: main
+        signed_by: /etc/apt/keyrings/tailscale.asc
+        state: present
+
+    - name: Ensure tailscale is installed
+      ansible.builtin.apt:
+        name: tailscale
+        state: present
+        update_cache: true
+
+    - name: Ensure the tailscaled service is enabled and running
+      ansible.builtin.systemd:
+        name: tailscaled.service
+        enabled: true
+        state: started
+
+    - name: Check the current tailnet enrolment status
+      ansible.builtin.command: tailscale status --json
+      register: tailscale_status
+      changed_when: false
+
+    - name: Look up the headscale user ID for tailscale_headscale_user
+      ansible.builtin.command: headscale users list -o json
+      delegate_to: headscale
+      become: false
+      register: tailscale_headscale_users
+      changed_when: false
+      when: (tailscale_status.stdout | from_json).BackendState != "Running"
+
+    - name: Generate a one-time headscale preauth key for the homelab host
+      ansible.builtin.command: >-
+        headscale preauthkeys create
+        --user {{ (tailscale_headscale_users.stdout | from_json | selectattr('name', 'equalto', tailscale_headscale_user) | first).id }}
+        --expiration 10m
+      delegate_to: headscale
+      become: false
+      register: tailscale_preauth_key
+      when: (tailscale_status.stdout | from_json).BackendState != "Running"
+
+    - name: Register the homelab host on the tailnet
+      ansible.builtin.command: >-
+        tailscale up
+        --login-server=https://{{ headscale_domain }}
+        --authkey={{ tailscale_preauth_key.stdout | trim }}
+      when: (tailscale_status.stdout | from_json).BackendState != "Running"

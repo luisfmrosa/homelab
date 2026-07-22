@@ -63,3 +63,8 @@ headplane_node_major: "24"
 # Port headplane's Node server listens on (loopback only; Caddy reverse-
 # proxies /admin/* to this port — see templates/Caddyfile.j2).
 headplane_port: 3000
+
+# Headscale user the homelab host itself registers under when joining its
+# own tailnet (see tailscale.yml) — must be one of the names already listed
+# in headscale_users (real values in the gitignored 01-local.yml).
+tailscale_headscale_user: luis
