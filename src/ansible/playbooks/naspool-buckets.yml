@@ -1,0 +1,41 @@
+---
+# Prepares a dedicated, empty BTRFS subvolume at /naspool/incus-buckets for
+# use as the source of a new Incus storage pool (see
+# src/opentofu/naspool-buckets.tf), entirely separate from the existing
+# /naspool data — same "dedicated subvolume, not the mount root" pattern
+# already used for the default Incus pool at /var/lib/incus-pool (see
+# incus.yml). This playbook does NOT touch any existing files under
+# /naspool; a subvolume create is purely additive.
+#
+# Before creating anything, takes a read-only snapshot of the current
+# /naspool subvolume as a cheap, near-instant rollback point, since this is
+# a real, already-populated production filesystem.
+- name: Prepare a dedicated BTRFS subvolume for Incus storage buckets
+  hosts: myhosts
+  become: true
+
+  tasks:
+    - name: Ensure the snapshots directory exists
+      ansible.builtin.file:
+        path: /naspool/.snapshots
+        state: directory
+        mode: "0755"
+
+    - name: Check whether the pre-incus-buckets safety snapshot already exists
+      ansible.builtin.stat:
+        path: /naspool/.snapshots/pre-incus-buckets
+      register: naspool_safety_snapshot
+
+    - name: Take a read-only safety snapshot of /naspool before creating the subvolume
+      ansible.builtin.command: btrfs subvolume snapshot -r /naspool /naspool/.snapshots/pre-incus-buckets
+      when: not naspool_safety_snapshot.stat.exists
+
+    - name: Check whether the incus-buckets subvolume already exists
+      ansible.builtin.command: btrfs subvolume show /naspool/incus-buckets
+      register: naspool_buckets_subvolume_check
+      changed_when: false
+      failed_when: false
+
+    - name: Create the dedicated BTRFS subvolume for Incus storage buckets
+      ansible.builtin.command: btrfs subvolume create /naspool/incus-buckets
+      when: naspool_buckets_subvolume_check.rc != 0

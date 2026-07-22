@@ -7,7 +7,7 @@ Incus-compose YML files used in this project are saved on `src/incus-compose/` d
 ## TODO List
 
 1. ~~create the container for Samba~~ — didn't end up going through incus-compose. Samba runs directly on the `naspool-samba` instance instead, provisioned by OpenTofu (`src/opentofu/naspool.tf`) and configured by Ansible (`src/ansible/playbooks/samba.yml`) — same tool-boundary reasoning as `naspool.yaml` below (bind mounts don't work via incus-compose from the laptop). NFS was tried too but dropped — see `samba.yml`'s own header comment and `naspool.tf` for why. See `references/OPENTOFU.md` and `references/ANSIBLE.md`.
-1. create the container for S3
+1. ~~create the container for S3~~ — didn't end up going through incus-compose either. S3 is served natively by Incus itself (a storage bucket on a dedicated BTRFS storage pool), no container involved — provisioned by OpenTofu (`src/opentofu/naspool-buckets.tf`) with the underlying subvolume prepared by Ansible (`src/ansible/playbooks/naspool-buckets.yml`). See `references/OPENTOFU.md` and `references/ANSIBLE.md`.
 
 ## Compose files
 

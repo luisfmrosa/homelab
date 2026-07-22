@@ -19,6 +19,13 @@ naspool_mount_point: /naspool
 # https://<homelab-ip>:8443 from the laptop.
 incus_https_address: "0.0.0.0:8443"
 
+# Address:port the Incus storage buckets (S3-compatible) API listens on.
+# 0.0.0.0 exposes it on every interface, so S3 clients can reach it at
+# https://<homelab-ip>:8555 from the LAN. Gates whether any Incus storage
+# pool can host buckets at all (see naspool-buckets.yml and
+# src/opentofu/naspool-buckets.tf).
+incus_storage_buckets_address: "0.0.0.0:8555"
+
 # Public DNS name for the headscale controller, registered on duckdns.org.
 # Used as headscale's server_url and as the Caddy site address (Caddy
 # issues/renews its Let's Encrypt certificate for this name automatically).
