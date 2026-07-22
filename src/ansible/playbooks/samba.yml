@@ -1,0 +1,67 @@
+---
+# Installs Samba on the "naspool" Incus instance, exporting its bind-mounted
+# /naspool (see naspool.tf) as a single read/write share reachable from both
+# the LAN and the tailnet via naspool.tf's proxy device. Connects via the
+# community.general.incus connection plugin (incus exec, as root) rather
+# than SSH — this instance has no SSH server or cloud-init user, same as
+# the "headscale" instance.
+#
+# NFS was tried too, but the kernel NFS server can't run inside an
+# unprivileged Incus container (mounting /proc/fs/nfsd is denied) — see
+# naspool.tf for details. Samba alone covers the actual use case.
+- name: Install and configure Samba for naspool
+  hosts: naspool_hosts
+  become: false
+
+  tasks:
+    - name: Ensure Samba is installed
+      ansible.builtin.apt:
+        name: samba
+        state: present
+        update_cache: true
+
+    - name: Ensure a Linux user exists for each Samba user
+      ansible.builtin.user:
+        name: "{{ item }}"
+        system: true
+        shell: /usr/sbin/nologin
+        create_home: false
+      loop: "{{ samba_users }}"
+
+    - name: Deploy the Samba configuration
+      ansible.builtin.template:
+        src: smb.conf.j2
+        dest: /etc/samba/smb.conf
+        mode: "0644"
+      notify: Restart Samba
+
+    - name: Check whether each Samba user's password has already been set
+      ansible.builtin.stat:
+        path: "/etc/samba/.smbpasswd_set_{{ item }}"
+      loop: "{{ samba_users }}"
+      register: smbpasswd_marker
+
+    - name: Set each Samba user's password (once)
+      ansible.builtin.shell:
+        cmd: "printf '%s\\n%s\\n' {{ samba_passwords[item.item] | quote }} {{ samba_passwords[item.item] | quote }} | smbpasswd -a -s {{ item.item | quote }} && touch /etc/samba/.smbpasswd_set_{{ item.item }}"
+      loop: "{{ smbpasswd_marker.results }}"
+      when: not item.stat.exists
+      no_log: true
+
+    - name: Ensure the Samba services are enabled and running
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        enabled: true
+        state: started
+      loop:
+        - smbd
+        - nmbd
+
+  handlers:
+    - name: Restart Samba
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        state: restarted
+      loop:
+        - smbd
+        - nmbd

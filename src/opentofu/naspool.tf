@@ -3,18 +3,7 @@ resource "incus_instance" "naspool" {
   image = "images:debian/12"
 
   config = {
-    "boot.autostart"        = true
-    "cloud-init.user-data"  = <<-EOT
-      #cloud-config
-      users:
-        - name: ${var.ssh_user}
-          groups: sudo
-          shell: /bin/bash
-          sudo: ALL=(ALL) NOPASSWD:ALL
-          ssh_authorized_keys:
-            - ${var.ssh_public_key}
-      ssh_pwauth: false
-    EOT
+    "boot.autostart" = true
   }
 
   device {
@@ -24,6 +13,27 @@ resource "incus_instance" "naspool" {
     properties = {
       path   = "/naspool"
       source = "/naspool"
+    }
+  }
+
+  # Default NAT'd incusbr0 bridge (same as headscale.tf) — no cloud-init
+  # user/SSH is provisioned; Ansible connects via the community.general.incus
+  # connection plugin (incus exec, as root) instead, same as the "headscale"
+  # instance. Exposed to the LAN and tailnet via the proxy device below,
+  # forwarding from the homelab host's own addresses (both its LAN IP and its
+  # tailnet IP terminate on the host itself, see tailscale.yml) to the
+  # container's internal Samba port. NFS was tried too, but the kernel NFS
+  # server (nfsd) requires mounting /proc/fs/nfsd, which unprivileged Incus
+  # containers can't do (confirmed in practice: "mount: /proc/fs/nfsd:
+  # permission denied") — Samba alone covers the actual use case, so NFS was
+  # dropped rather than making this container privileged.
+  device {
+    name = "smb"
+    type = "proxy"
+
+    properties = {
+      listen  = "tcp:0.0.0.0:445"
+      connect = "tcp:127.0.0.1:445"
     }
   }
 }

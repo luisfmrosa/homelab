@@ -8,3 +8,8 @@ homelab ansible_user=luis
 # in WSL/Ubuntu itself (separate from the Windows-side incus CLI), see
 # references/INSTALL.md.
 headscale ansible_connection=community.general.incus ansible_incus_remote=homelab ansible_incus_host=headscale
+
+[naspool_hosts]
+# Same connection approach as headscale above — incus exec as root, no SSH
+# server/user provisioned on this instance (see src/opentofu/naspool.tf).
+naspool ansible_connection=community.general.incus ansible_incus_remote=homelab ansible_incus_host=naspool

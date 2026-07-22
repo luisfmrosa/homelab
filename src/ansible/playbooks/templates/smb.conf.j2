@@ -1,0 +1,17 @@
+# Managed by Ansible (src/ansible/playbooks/samba-nfs.yml). Manual edits
+# will be overwritten on the next playbook run.
+
+[global]
+    workgroup = WORKGROUP
+    server string = naspool
+    security = user
+    map to guest = never
+    log file = /var/log/samba/log.%m
+    max log size = 1000
+
+[naspool]
+    path = /naspool
+    browsable = yes
+    read only = no
+    guest ok = no
+    valid users = {{ samba_users | join(' ') }}

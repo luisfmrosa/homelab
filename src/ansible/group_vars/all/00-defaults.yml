@@ -68,3 +68,14 @@ headplane_port: 3000
 # own tailnet (see tailscale.yml) — must be one of the names already listed
 # in headscale_users (real values in the gitignored 01-local.yml).
 tailscale_headscale_user: luis
+
+# Samba/Linux users created on the "naspool" instance (see naspool.tf and
+# samba.yml), each with read/write access to the single [naspool] share.
+# Override in the gitignored 01-local.yml with real usernames, alongside a
+# parallel samba_passwords map keyed by username, e.g.:
+#   samba_users: ["luis"]
+#   samba_passwords:
+#     luis: "CHANGEME"
+# Kept out of git since it's personal/account data, not infrastructure —
+# same reasoning as headscale_users above.
+samba_users: []
