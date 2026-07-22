@@ -4,7 +4,7 @@ This document describes all infrastructure created on top of incus using OpenTof
 
 ## TODO List
 
-1. ~~create the infra for headscale~~ — done, see `src/opentofu/headscale.tf`. Headplane (headscale's web UI) is still TODO.
+1. ~~create the infra for headscale~~ — done, see `src/opentofu/headscale.tf`. Headplane (headscale's web UI) is also done, but needed no separate OpenTofu infrastructure — it's built and run inside the same `headscale` container by `src/ansible/playbooks/headplane.yml`, reached over the same Caddy-fronted ports `headscale.tf` already exposes (see `references/ANSIBLE.md`).
 1. create the infra for Coolify
 1. Via Coolify: install a password manager
 

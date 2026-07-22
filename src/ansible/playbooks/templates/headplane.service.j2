@@ -1,0 +1,20 @@
+# Managed by Ansible (src/ansible/playbooks/headplane.yml). Manual edits
+# will be overwritten on the next playbook run.
+
+[Unit]
+Description=Headplane (headscale web UI)
+After=network.target headscale.service
+Requires=headscale.service
+
+[Service]
+Type=simple
+User=headplane
+Group=headplane
+WorkingDirectory={{ headplane_install_dir }}
+Environment=HEADPLANE_CONFIG_PATH=/etc/headplane/config.yaml
+ExecStart=/usr/bin/node {{ headplane_install_dir }}/build/server/index.js
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

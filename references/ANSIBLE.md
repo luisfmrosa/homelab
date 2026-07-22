@@ -7,7 +7,8 @@ This document describes what is configured in the homelab using Ansible.
 
 1. ~~Configure BTRFS disks as DATA~~ — done, see `src/ansible/playbooks/naspool.yml`
 2. ~~Install incus~~ — done, see `src/ansible/playbooks/incus.yml`
-3. ~~Install and configure headscale (Caddy + Let's Encrypt + embedded DERP)~~ — done, see `src/ansible/playbooks/headscale.yml`. Headplane (the web UI) is still TODO.
+3. ~~Install and configure headscale (Caddy + Let's Encrypt + embedded DERP)~~ — done, see `src/ansible/playbooks/headscale.yml`.
+4. ~~Install and configure headplane (the web UI)~~ — done, see `src/ansible/playbooks/headplane.yml`.
 
 ## Playbooks
 
@@ -34,6 +35,25 @@ This document describes what is configured in the homelab using Ansible.
   * Requires the `community.general` collection (`ansible-galaxy collection install -r src/ansible/requirements.yml`).
   * Run with: `ansible-playbook -i src/ansible/hosts src/ansible/playbooks/headscale.yml` (no `-K` needed — connects as root via `incus exec`, not sudo-over-SSH).
   * Manual, one-off steps this playbook cannot reach (router firewall rules, DuckDNS domain) are documented in the "headscale" section of `references/INSTALL.md`.
+
+* `src/ansible/playbooks/headplane.yml` — installs [headplane](https://github.com/tale/headplane) (headscale's web UI) into the **same** `headscale` Incus instance, co-located rather than in a separate container, since full DNS/network-management editing requires headplane to read headscale's actual `config.yaml` from the local filesystem (cross-host access is explicitly documented upstream as "advanced, unsupported"). Depends on `headscale.yml` having already run (needs the headscale service, API, and config file to exist first). There's no prebuilt binary/tarball release upstream (only Docker images or source), and this container intentionally has no Docker, so headplane is **built from source**:
+  * Node.js (`headplane_node_major` in `group_vars/all/00-defaults.yml`, currently `24`) is installed from the [NodeSource](https://github.com/nodesource/distributions) apt repository — Debian 12's own repo only ships Node 18, too old for headplane. Uses the same `deb822_repository` idiom as Caddy's own repo setup in `headscale.yml`. `corepack enable` then provides `pnpm`.
+  * A dedicated unprivileged `headplane` system user/group runs the service (distinct from headscale's own system user).
+  * Headplane's source is cloned at the pinned tag (`headplane_version`, currently `0.7.0`) to `headplane_install_dir` (`/opt/headplane`), then built with `pnpm install --frozen-lockfile && pnpm run build` — only re-run when the checked-out tag doesn't match, same "check installed version string, only act if it doesn't match" idiom already used for headscale's own `.deb` install.
+  * Two secrets are generated once and persisted only on the container's filesystem — **never** written to `group_vars` or git, unlike user-supplied vars such as `naspool_disks`/`headscale_users`: a cookie-signing secret (`/etc/headplane/cookie_secret`, `openssl rand -base64 32`) and a long-lived headscale API key (`/etc/headplane/api_key`, `headscale apikeys create --expiration 8760h`, ~1 year). Both are guarded by a file-exists check (same idiom as `incus.yml`'s trust-token task) so re-running the playbook doesn't regenerate them and invalidate existing sessions/break the configured key.
+  * `/etc/headscale/config.yaml` (deployed `root:root 0644` by `headscale.yml`) has its group changed to `headplane` and mode set to `0664`, so headplane — running as its own unprivileged user — can write it back when DNS/network settings are edited from the UI.
+  * Headplane's own config (template: `src/ansible/playbooks/templates/headplane-config.yaml.j2`) points `headscale.url` at `http://127.0.0.1:8080` (headscale's own loopback API) and `headscale.config_path` at `/etc/headscale/config.yaml`; `integration.proc.enabled: true` is required for the DNS/network-management editing UI to work (it's how headplane finds and signals the running headscale process) — `agent`/`docker`/`kubernetes` integrations all stay disabled (no SSH-in-browser, no Docker, no k8s).
+  * Runs via a generated systemd unit (template: `src/ansible/playbooks/templates/headplane.service.j2`) on port `headplane_port` (currently `3000`, loopback only), with `After=`/`Requires=headscale.service`.
+  * The shared Caddyfile (template: `src/ansible/playbooks/templates/Caddyfile.j2`, also deployed by this playbook) routes `/admin/*` to headplane and everything else to headscale's own API, on the same domain/certificate — no new DNS/firewall changes needed.
+  * Run with: `ansible-playbook -i src/ansible/hosts src/ansible/playbooks/headplane.yml` (after `headscale.yml`). Reachable at `https://<headscale_domain>/admin`; log in using the value in `/etc/headplane/api_key` (`incus exec headscale -- cat /etc/headplane/api_key`).
+
+### Renewing the headplane API key
+
+The API key headplane uses to talk to headscale expires after ~1 year (`--expiration 8760h`) and, per headscale's own behavior, can't be retrieved again once created — there's no automated rotation. To renew:
+
+1. Generate a new key: `incus exec headscale -- headscale apikeys create --expiration 8760h`
+2. Replace the file's contents on the container: `incus exec headscale -- sh -c 'echo "<new-key>" > /etc/headplane/api_key'`
+3. Re-run `ansible-playbook -i src/ansible/hosts src/ansible/playbooks/headplane.yml` to redeploy headplane's config with the new key and restart the service (the generation task itself won't re-run, since it's guarded by the file already existing — only the redeploy/restart happens).
 
 ## Upgrading headscale
 

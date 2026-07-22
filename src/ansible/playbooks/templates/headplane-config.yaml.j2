@@ -1,0 +1,23 @@
+# Managed by Ansible (src/ansible/playbooks/headplane.yml). Manual edits
+# will be overwritten on the next playbook run.
+
+server:
+  host: "127.0.0.1"
+  port: {{ headplane_port }}
+  base_url: "https://{{ headscale_domain }}"
+  cookie_secret: "{{ headplane_cookie_secret_slurp.content | b64decode | trim }}"
+  cookie_secure: true
+  data_path: /var/lib/headplane
+
+headscale:
+  url: "http://127.0.0.1:8080"
+  config_path: /etc/headscale/config.yaml
+  api_key: "{{ headplane_api_key_slurp.content | b64decode | trim }}"
+
+integration:
+  agent:
+    enabled: false
+  docker:
+    enabled: false
+  proc:
+    enabled: true

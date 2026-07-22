@@ -1,0 +1,219 @@
+---
+# Builds and installs headplane (headscale's web UI, github.com/tale/headplane)
+# from source into the same "headscale" Incus instance headscale itself runs
+# in. Full DNS/network-management editing support requires headplane to run
+# co-located with headscale and read its actual config.yaml from the local
+# filesystem — cross-host access is explicitly documented upstream as
+# "advanced, unsupported". No prebuilt binary/tarball release exists
+# upstream (only Docker images or source), and this container intentionally
+# has no Docker, so headplane is built with Node.js/pnpm and run directly
+# via systemd, mirroring how headscale.yml installs headscale itself.
+# Targets the same [headscale_hosts] group as headscale.yml — run
+# headscale.yml first, since headplane depends on the headscale service,
+# API, and config file already existing.
+- name: Install and configure headplane
+  hosts: headscale_hosts
+
+  tasks:
+    - name: Add the NodeSource apt signing key
+      ansible.builtin.get_url:
+        url: https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key
+        dest: /etc/apt/keyrings/nodesource.asc
+        mode: "0644"
+
+    - name: Add the NodeSource apt repository
+      ansible.builtin.deb822_repository:
+        name: nodesource
+        types: deb
+        uris: "https://deb.nodesource.com/node_{{ headplane_node_major }}.x"
+        suites: nodistro
+        components: main
+        signed_by: /etc/apt/keyrings/nodesource.asc
+        state: present
+
+    - name: Ensure Node.js is installed
+      ansible.builtin.apt:
+        name: nodejs
+        state: present
+        update_cache: true
+
+    - name: Ensure corepack (pnpm) is enabled
+      ansible.builtin.command: corepack enable
+      args:
+        creates: /usr/local/bin/pnpm
+
+    - name: Ensure the headplane system group exists
+      ansible.builtin.group:
+        name: headplane
+        system: true
+
+    - name: Ensure the headplane system user exists
+      ansible.builtin.user:
+        name: headplane
+        group: headplane
+        system: true
+        shell: /usr/sbin/nologin
+        home: /var/lib/headplane
+        create_home: true
+
+    - name: Ensure git is installed
+      ansible.builtin.apt:
+        name: git
+        state: present
+
+    - name: Mark the headplane install directory as a safe git directory
+      ansible.builtin.command: "git config --global --add safe.directory {{ headplane_install_dir }}"
+      changed_when: false
+
+    - name: Check the currently checked-out headplane version
+      ansible.builtin.command: "git -C {{ headplane_install_dir }} describe --tags"
+      register: headplane_version_check
+      changed_when: false
+      failed_when: false
+
+    - name: Clone the headplane repository at the pinned tag
+      ansible.builtin.git:
+        repo: https://github.com/tale/headplane.git
+        dest: "{{ headplane_install_dir }}"
+        version: "v{{ headplane_version }}"
+        force: true
+      when: headplane_version not in (headplane_version_check.stdout | default(''))
+
+    - name: Install headplane's JS dependencies (frozen lockfile)
+      ansible.builtin.command: pnpm install --frozen-lockfile
+      args:
+        chdir: "{{ headplane_install_dir }}"
+      when: headplane_version not in (headplane_version_check.stdout | default(''))
+
+    - name: Build headplane
+      ansible.builtin.command: pnpm run build
+      args:
+        chdir: "{{ headplane_install_dir }}"
+      when: headplane_version not in (headplane_version_check.stdout | default(''))
+
+    - name: Ensure the headplane install directory is owned by the headplane user
+      ansible.builtin.file:
+        path: "{{ headplane_install_dir }}"
+        owner: headplane
+        group: headplane
+        recurse: true
+        state: directory
+
+    - name: Ensure the headplane data directory exists
+      ansible.builtin.file:
+        path: /var/lib/headplane
+        state: directory
+        owner: headplane
+        group: headplane
+        mode: "0750"
+
+    - name: Ensure /etc/headplane exists
+      ansible.builtin.file:
+        path: /etc/headplane
+        state: directory
+        mode: "0750"
+        owner: headplane
+        group: headplane
+
+    - name: Check whether the headplane cookie secret already exists
+      ansible.builtin.stat:
+        path: /etc/headplane/cookie_secret
+      register: headplane_cookie_secret_file
+
+    - name: Generate the headplane cookie secret (once)
+      ansible.builtin.shell: openssl rand -hex 16 | tr -d '\n' > /etc/headplane/cookie_secret
+      when: not headplane_cookie_secret_file.stat.exists
+
+    - name: Lock down the cookie secret file permissions
+      ansible.builtin.file:
+        path: /etc/headplane/cookie_secret
+        mode: "0640"
+        owner: headplane
+        group: headplane
+
+    - name: Check whether a headplane API key has already been configured
+      ansible.builtin.stat:
+        path: /etc/headplane/api_key
+      register: headplane_api_key_file
+
+    - name: Generate a long-lived headscale API key for headplane (once)
+      ansible.builtin.shell: headscale apikeys create --expiration 8760h > /etc/headplane/api_key
+      when: not headplane_api_key_file.stat.exists
+
+    - name: Lock down the API key file permissions
+      ansible.builtin.file:
+        path: /etc/headplane/api_key
+        mode: "0640"
+        owner: headplane
+        group: headplane
+
+    - name: Report the headplane API key file location
+      ansible.builtin.debug:
+        msg: >-
+          Headplane's headscale API key is stored at /etc/headplane/api_key
+          on the container (not printed here for security). It expires in
+          ~1 year — see the "Renewing the headplane API key" section of
+          references/ANSIBLE.md when it does.
+
+    - name: Read back the generated cookie secret
+      ansible.builtin.slurp:
+        src: /etc/headplane/cookie_secret
+      register: headplane_cookie_secret_slurp
+
+    - name: Read back the generated API key
+      ansible.builtin.slurp:
+        src: /etc/headplane/api_key
+      register: headplane_api_key_slurp
+
+    - name: Allow headplane to write back headscale's config.yaml
+      ansible.builtin.file:
+        path: /etc/headscale/config.yaml
+        group: headplane
+        mode: "0664"
+
+    - name: Deploy the headplane configuration
+      ansible.builtin.template:
+        src: headplane-config.yaml.j2
+        dest: /etc/headplane/config.yaml
+        mode: "0640"
+        owner: headplane
+        group: headplane
+      notify: Restart headplane
+
+    - name: Deploy the headplane systemd unit
+      ansible.builtin.template:
+        src: headplane.service.j2
+        dest: /etc/systemd/system/headplane.service
+        mode: "0644"
+      notify:
+        - Reload systemd
+        - Restart headplane
+
+    - name: Ensure the headplane service is enabled and running
+      ansible.builtin.systemd:
+        name: headplane.service
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: Deploy the Caddyfile (headscale + headplane)
+      ansible.builtin.template:
+        src: Caddyfile.j2
+        dest: /etc/caddy/Caddyfile
+        mode: "0644"
+      notify: Reload Caddy
+
+  handlers:
+    - name: Reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Restart headplane
+      ansible.builtin.systemd:
+        name: headplane.service
+        state: restarted
+
+    - name: Reload Caddy
+      ansible.builtin.systemd:
+        name: caddy.service
+        state: reloaded

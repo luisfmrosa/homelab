@@ -478,4 +478,8 @@ Node registration itself is **not** automated — a device needs an interactive 
    incus exec headscale --remote homelab -- headscale nodes register --user <username> --key <nodekey-shown-by-the-app>
    ```
 
+#### Step 5: headplane (web UI)
+
+Headplane is reachable at `https://<mydomain>.duckdns.org/admin` once `src/ansible/playbooks/headplane.yml` has run (see `references/ANSIBLE.md`) — no additional manual/router steps needed, it reuses the same ports and Let's Encrypt certificate as headscale itself. Log in using the API key generated for it (`incus exec headscale -- cat /etc/headplane/api_key`).
+
 **END**

@@ -44,3 +44,22 @@ headscale_version: "0.29.2"
 # Override this list in the gitignored 01-local.yml with your real usernames
 # — kept out of git since it's personal/account data, not infrastructure.
 headscale_users: []
+
+# Pinned headplane (headscale web UI) release tag — built from source (no
+# prebuilt binary/tarball exists upstream, only Docker images or source).
+# https://github.com/tale/headplane/releases
+headplane_version: "0.7.0"
+
+# Where headplane's cloned/built source tree lives on the container.
+headplane_install_dir: /opt/headplane
+
+# Node.js major version installed via the NodeSource apt repo (Debian 12's
+# own apt repo only ships Node 18, too old for headplane). Pinned to 24 per
+# headplane v0.7.0's package.json "engines" field (its own native-mode docs
+# say 22.16.x, an inconsistency with the manifest — bump this if pnpm's
+# engines check rejects 24.x in practice).
+headplane_node_major: "24"
+
+# Port headplane's Node server listens on (loopback only; Caddy reverse-
+# proxies /admin/* to this port — see templates/Caddyfile.j2).
+headplane_port: 3000
