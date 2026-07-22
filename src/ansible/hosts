@@ -12,4 +12,4 @@ headscale ansible_connection=community.general.incus ansible_incus_remote=homela
 [naspool_hosts]
 # Same connection approach as headscale above — incus exec as root, no SSH
 # server/user provisioned on this instance (see src/opentofu/naspool.tf).
-naspool ansible_connection=community.general.incus ansible_incus_remote=homelab ansible_incus_host=naspool
+naspool-samba ansible_connection=community.general.incus ansible_incus_remote=homelab ansible_incus_host=naspool-samba

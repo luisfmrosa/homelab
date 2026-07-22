@@ -1,5 +1,5 @@
 ---
-# Installs Samba on the "naspool" Incus instance, exporting its bind-mounted
+# Installs Samba on the "naspool-samba" Incus instance, exporting its bind-mounted
 # /naspool (see naspool.tf) as a single read/write share reachable from both
 # the LAN and the tailnet via naspool.tf's proxy device. Connects via the
 # community.general.incus connection plugin (incus exec, as root) rather

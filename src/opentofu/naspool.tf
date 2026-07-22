@@ -1,5 +1,5 @@
 resource "incus_instance" "naspool" {
-  name  = "naspool"
+  name  = "naspool-samba"
   image = "images:debian/12"
 
   config = {
@@ -16,6 +16,10 @@ resource "incus_instance" "naspool" {
     }
   }
 
+  # Named "naspool-samba" rather than "naspool" to disambiguate it from the
+  # host's /naspool BTRFS mount and the (planned) "naspool-buckets" Incus
+  # storage pool — "naspool" alone was ambiguous across all three.
+  #
   # Default NAT'd incusbr0 bridge (same as headscale.tf) — no cloud-init
   # user/SSH is provisioned; Ansible connects via the community.general.incus
   # connection plugin (incus exec, as root) instead, same as the "headscale"
