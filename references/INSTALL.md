@@ -449,6 +449,7 @@ Forward/allow the following from the internet to the **homelab host's** IPv6 (no
 #### Step 3: create/update the DuckDNS domain
 
 1. On https://www.duckdns.org, sign in and point the domain (already registered: `<headscale-domain>`) at the homelab host's IPv6 from Step 1 (DuckDNS supports an AAAA-only update — see their site for the exact update URL/token).
+   * **Make sure no stale A (IPv4) record is left on the domain.** DuckDNS keeps the IPv4 and IPv6 records independent, so updating only the AAAA record leaves any old A record in place. Clients that try IPv4 first (many Tailscale/Tailscale-compatible clients, including the Android and Windows apps) will then hang indefinitely trying to connect to a dead IPv4 address before ever falling back to the working IPv6 one — this caused node enrollment to silently stall on both platforms even though a plain HTTPS request (e.g. `/health`) succeeded. Clear the A record on DuckDNS's site (leave the IPv4 field blank) if one exists.
 2. If the domain name ever changes, update it in these files:
    * `src/ansible/group_vars/all/00-defaults.yml` — `headscale_domain`
    * Re-run `ansible-playbook -i src/ansible/hosts src/ansible/playbooks/headscale.yml` to regenerate the Caddyfile and headscale `config.yaml` (`server_url`, `dns.base_domain`) from the new value and re-issue the Let's Encrypt certificate.

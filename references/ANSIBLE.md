@@ -29,9 +29,40 @@ This document describes what is configured in the homelab using Ansible.
 * `src/ansible/playbooks/headscale.yml` — targets the `[headscale_hosts]` inventory group (the `headscale` Incus instance created by `src/opentofu/headscale.tf`, on the default NAT'd `incusbr0` bridge — see `references/OPENTOFU.md` for why a macvlan NIC on the homelab's WiFi was tried and abandoned). Connects via the `community.general.incus` connection plugin (`incus exec` against the trusted `homelab` remote, as root) instead of SSH — the container has no SSH server and no non-root user; the base `images:debian/12` image has no cloud-init either, so nothing is pre-provisioned. Requires a working `incus` CLI trusted against the `homelab` remote from inside WSL/Ubuntu itself (separate from the Windows-side one used by `incus`/`incus-compose`/OpenTofu) — see `references/INSTALL.md`. The image also ships with **no Python interpreter**, which Ansible's non-`raw`/`command` modules need — after `tofu apply` creates (or recreates) the instance, bootstrap it once with `incus exec headscale -- apt-get update && incus exec headscale -- apt-get install -y python3` before running this playbook, or the `Gathering Facts` step fails with "No python interpreters found". Installs Caddy from its own apt repo and headscale from a pinned `.deb` release (no apt repo exists for headscale), then configures:
   * Caddy (template: `src/ansible/playbooks/templates/Caddyfile.j2`) as a reverse proxy in front of headscale's plain-HTTP listener, for the site `headscale_domain` (`group_vars/all/00-defaults.yml`, currently `<headscale-domain>`) — Caddy obtains and renews its Let's Encrypt certificate automatically, no separate certbot setup needed.
   * headscale (template: `src/ansible/playbooks/templates/headscale-config.yaml.j2`) with its embedded DERP relay enabled (no separate `derper` binary/service), STUN listening on `headscale_derp_stun_port` (default `3478/udp`, must be forwarded on the router — see `references/INSTALL.md`).
-  * `headscale_version` (`group_vars/all/00-defaults.yml`) pins the installed release; bump it and re-run the playbook to upgrade.
+  * `headscale_version` (`group_vars/all/00-defaults.yml`) pins the installed release — bump it and re-run the playbook to upgrade, but see "Upgrading headscale" below before jumping to a new version.
   * Users: creates any usernames listed in `headscale_users` (`group_vars/all/00-defaults.yml`, defaults to `[]`) via `headscale users create`, checked against `headscale users list -o json` first so re-running is idempotent. Override the list in the gitignored `group_vars/all/01-local.yml` — kept out of git since it's personal account data, not infrastructure. Node registration itself stays manual (see `references/INSTALL.md`), since it requires an interactive nodekey/pre-auth key from the client at enrollment time.
   * Requires the `community.general` collection (`ansible-galaxy collection install -r src/ansible/requirements.yml`).
   * Run with: `ansible-playbook -i src/ansible/hosts src/ansible/playbooks/headscale.yml` (no `-K` needed — connects as root via `incus exec`, not sudo-over-SSH).
   * Manual, one-off steps this playbook cannot reach (router firewall rules, DuckDNS domain) are documented in the "headscale" section of `references/INSTALL.md`.
+
+## Upgrading headscale
+
+Headscale enforces a strict upgrade path: it refuses to start if the database was last touched by a binary more than one minor version behind, and pre-0.25.0 databases aren't supported by 0.28.0+'s migrations at all. **Always upgrade one minor version at a time** (latest stable patch of each — check https://github.com/juanfont/headscale/releases for what actually exists, some minors skip straight to a later patch or only have a release candidate), never straight to the newest release. Patch-only bumps within the same minor (e.g. `0.27.0` → `0.27.1`) don't need this — only crossing a minor-version boundary does.
+
+For each hop:
+
+1. **Snapshot the container** (the `incus` CLI already defaults to the `homelab` remote, so `--remote` is optional if you've run `incus remote switch homelab`):
+   ```bash
+   incus snapshot create headscale pre-<target-version>
+   ```
+2. **Bump `headscale_version`** in `src/ansible/group_vars/all/00-defaults.yml` to that target version.
+3. **Run the playbook** (from WSL, since it uses the `community.general.incus` connection plugin):
+   ```bash
+   ansible-playbook -i src/ansible/hosts src/ansible/playbooks/headscale.yml
+   ```
+4. **Verify** before moving to the next hop:
+   ```bash
+   incus exec headscale -- headscale version
+   incus exec headscale -- headscale nodes list
+   incus exec headscale -- systemctl status headscale --no-pager
+   ```
+   Confirm the version matches, both existing nodes are still listed, and the service is `active (running)` with no migration errors in the log tail.
+5. **Roll back if a hop goes wrong:**
+   ```bash
+   incus exec headscale -- systemctl stop headscale
+   incus restore headscale pre-<target-version>
+   ```
+6. Once confident in a hop, prune its snapshot: `incus snapshot delete headscale pre-<target-version>`.
+
+Repeat for each intervening minor version until reaching the target release. Also check the target release's notes for a **minimum required Tailscale client version** — the Android/Windows/etc. apps enrolled as nodes may need updating too, or they'll fail to reconnect once the server's floor rises past their version.
 

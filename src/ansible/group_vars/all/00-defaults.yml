@@ -31,9 +31,14 @@ headscale_domain: <headscale-domain>
 headscale_derp_stun_port: 3478
 
 # Pinned headscale release version (no apt repo exists; installed from the
-# .deb published on the GitHub releases page). Bump deliberately and re-run
-# the playbook to upgrade: https://github.com/juanfont/headscale/releases
-headscale_version: "0.23.0"
+# .deb published on the GitHub releases page). Headscale enforces a strict
+# upgrade path — it refuses to start if you skip a minor version against an
+# existing database, and pre-0.25.0 databases aren't supported by 0.28.0+'s
+# migrations at all. Bump one minor version at a time (latest patch of each),
+# re-running the playbook and confirming `headscale version` + `systemctl
+# status headscale` after each hop, rather than jumping straight to the
+# latest release: https://github.com/juanfont/headscale/releases
+headscale_version: "0.29.2"
 
 # Headscale users to create (namespaces that tailnet nodes register under).
 # Override this list in the gitignored 01-local.yml with your real usernames
