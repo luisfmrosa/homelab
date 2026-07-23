@@ -29,7 +29,17 @@ derp:
     stun_listen_addr: "0.0.0.0:{{ headscale_derp_stun_port }}"
     private_key_path: /var/lib/headscale/derp_server_private.key
     automatically_add_embedded_derp_region: true
-  urls: []
+  # Tailscale's own public DERP map, merged in as a fallback alongside the
+  # embedded region above. Needed because some Tailscale clients (observed:
+  # Android over cellular, where the carrier blocks the embedded region's
+  # STUN probe on udp/3478) mark a DERP region entirely unreachable when its
+  # STUN probe fails, without falling back to that same region's HTTPS relay
+  # path (confirmed reachable independently: /derp and /derp/probe both
+  # respond correctly through Caddy). A second, independently-reachable set
+  # of regions gives clients a working relay path even when the embedded
+  # one's STUN is blocked somewhere in the network.
+  urls:
+    - https://controlplane.tailscale.com/derpmap/default
   paths: []
   auto_update_enabled: true
   update_frequency: 24h
