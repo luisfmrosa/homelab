@@ -1,0 +1,338 @@
+---
+# Deploys the media stack — Jellyfin (video), Navidrome (music) and Kavita
+# (ebooks/PDFs) — as three independent Incus OCI "application containers"
+# inside the isolated "media" Incus project created by
+# src/opentofu/media.tf.
+#
+# Same structural pattern as immich.yml (see that playbook for the full
+# rationale on each idiom), with four deliberate differences called out at
+# the point where they occur below:
+#   1. The media library is mounted READ-ONLY and is NOT chowned.
+#   2. All three images run as root in-container, so the writable config
+#      directories chown to media_idmap_base + 0 with no per-service offset.
+#   3. Jellyfin gets a `gpu` device (needs restricted.devices.gpu=allow).
+#   4. Unlike Immich's 4 services, these three never talk to each other —
+#      no inter-instance DNS/hostname wiring is needed at all.
+#
+# Targets the homelab host directly over SSH (myhosts), not
+# community.general.incus/`incus exec` like headscale.yml/samba.yml, because
+# these instances don't exist yet for `incus exec` to target — same
+# reasoning as immich.yml and incus.yml.
+#
+# All `incus` tasks run as the plain SSH login user (luis, no become/sudo):
+# the docker/ghcr OCI remotes incus.yml registers live in that user's own
+# Incus client config (~/.config/incus/config.yml), not root's, and luis is
+# already in the incus-admin group. Only the host directory creation/chown
+# tasks need actual root, via their own `become: true`.
+- name: Deploy the media stack as Incus OCI application containers
+  hosts: myhosts
+
+  tasks:
+    # Only the *writable* config/cache/database directories are created
+    # here. The media library itself (media_library_root) already exists,
+    # is owned by the user, and is exported read-write over Samba — this
+    # playbook deliberately never creates, moves or modifies anything
+    # inside it.
+    - name: Ensure the media config directories exist on /naspool
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - "{{ jellyfin_config_dir }}"
+        - "{{ jellyfin_cache_dir }}"
+        - "{{ navidrome_data_dir }}"
+        - "{{ kavita_config_dir }}"
+      become: true
+
+    # Same unprivileged-container ownership problem immich.yml documents at
+    # length: a plain bind mount doesn't remap ownership, so the container's
+    # process can't write to a host directory still owned root:root, and
+    # shift=true is rejected outright under a restricted.devices.disk.paths
+    # allowlist (with raw.idmap needing restricted.containers.lowlevel,
+    # which media.tf doesn't grant either). Pre-chowning the host path to
+    # the shifted UID is the only remaining option.
+    #
+    # Simpler than Immich's case though: all three images run every process
+    # as root (uid/gid 0) in-container — verified by launching each image as
+    # a throwaway instance and running `id` — so this is a single chown to
+    # media_idmap_base + 0 rather than Immich's three different per-service
+    # offsets (999 for postgres, 1000 for node, 0 for immich-ml).
+    - name: Chown the media config directories to the containers' shifted root
+      ansible.builtin.file:
+        path: "{{ item }}"
+        owner: "{{ media_idmap_base }}"
+        group: "{{ media_idmap_base }}"
+        recurse: true
+      loop:
+        - "{{ jellyfin_config_dir }}"
+        - "{{ jellyfin_cache_dir }}"
+        - "{{ navidrome_data_dir }}"
+        - "{{ kavita_config_dir }}"
+      become: true
+
+    # NOTE: there is deliberately no equivalent chown for the library
+    # directories (media_filmes_dir, media_musicas_dir, ...). They're
+    # mounted readonly=true below, and /naspool/biblioteca is already
+    # world-readable (dirs drwxr-xr-x, files -rw-r--r--, owned by uid 993),
+    # so the containers' shifted root can traverse and read them as-is.
+    # Chowning them would rewrite the ownership of the user's own Samba
+    # archive to a shifted UID — actively harmful, not merely unnecessary.
+
+    - name: Check which media instances already exist
+      ansible.builtin.command: incus list --project media -f json
+      register: media_instances
+      changed_when: false
+
+    # ---------------------------------------------------------------- #
+    # Jellyfin — video                                                  #
+    # ---------------------------------------------------------------- #
+    # Created stopped via `incus init`, given each device via a separate
+    # `incus config device add`, then started — `incus launch -d` can only
+    # *override* a device already present on an applied profile, not add a
+    # new one (see immich.yml). Every step below is guarded by checking its
+    # own state fresh (device list / instance status) rather than the
+    # single pre-play "does the instance exist" snapshot, so a failure
+    # part-way through can't permanently hide a later step on re-runs —
+    # exactly the idempotency bug that bit immich.yml in practice.
+    - name: Init the jellyfin instance
+      ansible.builtin.command:
+        cmd: incus init {{ jellyfin_image }} jellyfin --project media
+      when: "'jellyfin' not in (media_instances.stdout | from_json | map(attribute='name') | list)"
+
+    - name: Check jellyfin's current devices
+      ansible.builtin.command: incus config device list jellyfin --project media
+      register: jellyfin_devices
+      changed_when: false
+
+    - name: Add jellyfin's config disk device
+      ansible.builtin.command:
+        cmd: >-
+          incus config device add jellyfin config disk
+          source={{ jellyfin_config_dir }} path=/config
+          --project media
+      when: "'config' not in jellyfin_devices.stdout_lines"
+
+    - name: Add jellyfin's cache disk device
+      ansible.builtin.command:
+        cmd: >-
+          incus config device add jellyfin cache disk
+          source={{ jellyfin_cache_dir }} path=/cache
+          --project media
+      when: "'cache' not in jellyfin_devices.stdout_lines"
+
+    # readonly=true is the whole point of these two devices: Jellyfin can
+    # read and stream the library but cannot write to it, so its metadata,
+    # artwork and trickplay files land in /config instead of scattering
+    # through the user's archive. Samba (naspool-samba) remains the only
+    # writer to /naspool/biblioteca.
+    - name: Add jellyfin's Filmes library disk device (read-only)
+      ansible.builtin.command:
+        cmd: >-
+          incus config device add jellyfin filmes disk
+          source={{ media_filmes_dir }} path=/media/filmes readonly=true
+          --project media
+      when: "'filmes' not in jellyfin_devices.stdout_lines"
+
+    - name: Add jellyfin's Videos library disk device (read-only)
+      ansible.builtin.command:
+        cmd: >-
+          incus config device add jellyfin videos disk
+          source={{ media_videos_dir }} path=/media/videos readonly=true
+          --project media
+      when: "'videos' not in jellyfin_devices.stdout_lines"
+
+    # Hardware transcoding via the host's Intel UHD 605 iGPU (QuickSync).
+    # Requires restricted.devices.gpu=allow on the project (media.tf) —
+    # without it this fails with "GPU devices are forbidden", the same way
+    # disk and proxy devices did on the immich project.
+    #
+    # Selected by PCI address, NOT by `id=`. Incus's `id` property for a
+    # physical gpu device means the DRM *card number* (i.e. "0" for card0),
+    # not the render node's filename — `id=renderD128` fails at instance
+    # start with "Failed to start device \"gpu\": Failed to detect
+    # requested GPU device" (confirmed in practice). `pci=` is used here
+    # rather than `id=0` because it's unambiguous and stable: this host has
+    # exactly one GPU, the Gemini Lake iGPU at 0000:00:02.0 (find it with
+    # `lspci -nn | grep -i vga`, or follow /dev/dri/by-path/*-render).
+    #
+    # No gid= property is set: the container runs everything as root, which
+    # can open /dev/dri/renderD128 regardless of the host's render group
+    # (GID 992). This is the single most likely thing to silently degrade
+    # rather than fail loudly — if the device were missing or unreadable,
+    # Jellyfin would fall back to SOFTWARE transcoding with no error, which
+    # this host's J5005 cannot realistically sustain. Verify with a real
+    # VAAPI encode after deploy (see references/ANSIBLE.md), not merely by
+    # checking that /dev/dri exists inside the container.
+    - name: Add jellyfin's GPU device for QuickSync hardware transcoding
+      ansible.builtin.command:
+        cmd: >-
+          incus config device add jellyfin gpu gpu
+          pci={{ jellyfin_gpu_pci }}
+          --project media
+      when: "'gpu' not in jellyfin_devices.stdout_lines"
+
+    - name: Check whether jellyfin is running
+      ansible.builtin.command: incus list jellyfin --project media -f json
+      register: jellyfin_state
+      changed_when: false
+
+    - name: Start the jellyfin instance
+      ansible.builtin.command: incus start jellyfin --project media
+      when: (jellyfin_state.stdout | from_json | first).status != 'Running'
+
+    - name: Re-check jellyfin's devices before adding the web proxy
+      ansible.builtin.command: incus config device list jellyfin --project media
+      register: jellyfin_devices_post
+      changed_when: false
+
+    - name: Expose the Jellyfin web UI to the host
+      ansible.builtin.command:
+        cmd: >-
+          incus config device add jellyfin jellyfin-web proxy
+          listen=tcp:0.0.0.0:{{ jellyfin_port }}
+          connect=tcp:127.0.0.1:{{ jellyfin_port }}
+          --project media
+      when: "'jellyfin-web' not in jellyfin_devices_post.stdout_lines"
+
+    # ---------------------------------------------------------------- #
+    # Navidrome — music                                                 #
+    # ---------------------------------------------------------------- #
+    # ND_MUSICFOLDER points at /musicas, which is a mount point in its own
+    # right — NOT a subdirectory of some shared /music parent.
+    #
+    # An earlier version mounted both libraries as /music/Musicas and
+    # /music/iTunes, expecting Navidrome to scan the merged /music tree.
+    # That silently produced an EMPTY library: because /music itself
+    # doesn't exist in the OCI image, Incus creates a tmpfs at that path
+    # *after* attaching the child mounts, so the tmpfs is layered over them
+    # and buries both (confirmed via /proc/mounts inside the container,
+    # which showed both btrfs mounts followed by `none /music tmpfs`).
+    # Mounting at top-level paths that Incus creates directly avoids the
+    # shadowing entirely.
+    #
+    # Consequence: ND_MUSICFOLDER takes a single path, so only /musicas is
+    # scanned automatically. The iTunes library is mounted and readable at
+    # /itunes but is not part of the scanned library — see
+    # references/ANSIBLE.md for the options if it should be included.
+    - name: Init the navidrome instance
+      ansible.builtin.command:
+        cmd: >-
+          incus init {{ navidrome_image }} navidrome
+          --project media
+          -c environment.ND_MUSICFOLDER=/musicas
+          -c environment.ND_DATAFOLDER=/data
+      when: "'navidrome' not in (media_instances.stdout | from_json | map(attribute='name') | list)"
+
+    - name: Check navidrome's current devices
+      ansible.builtin.command: incus config device list navidrome --project media
+      register: navidrome_devices
+      changed_when: false
+
+    - name: Add navidrome's data disk device
+      ansible.builtin.command:
+        cmd: >-
+          incus config device add navidrome data disk
+          source={{ navidrome_data_dir }} path=/data
+          --project media
+      when: "'data' not in navidrome_devices.stdout_lines"
+
+    - name: Add navidrome's Musicas library disk device (read-only)
+      ansible.builtin.command:
+        cmd: >-
+          incus config device add navidrome musicas disk
+          source={{ media_musicas_dir }} path=/musicas readonly=true
+          --project media
+      when: "'musicas' not in navidrome_devices.stdout_lines"
+
+    # media_itunes_dir contains a space ("Biblioteca iTunes"), so the whole
+    # source=... token is quoted here — without the quotes the shell splits
+    # it and `incus` sees a stray "iTunes" argument.
+    #
+    # Mounted read-only and readable, but NOT scanned: ND_MUSICFOLDER above
+    # takes a single path. Left attached deliberately so the files are
+    # available in-container if this library is later merged in.
+    - name: Add navidrome's iTunes library disk device (read-only)
+      ansible.builtin.command:
+        cmd: >-
+          incus config device add navidrome itunes disk
+          "source={{ media_itunes_dir }}" path=/itunes readonly=true
+          --project media
+      when: "'itunes' not in navidrome_devices.stdout_lines"
+
+    - name: Check whether navidrome is running
+      ansible.builtin.command: incus list navidrome --project media -f json
+      register: navidrome_state
+      changed_when: false
+
+    - name: Start the navidrome instance
+      ansible.builtin.command: incus start navidrome --project media
+      when: (navidrome_state.stdout | from_json | first).status != 'Running'
+
+    - name: Re-check navidrome's devices before adding the web proxy
+      ansible.builtin.command: incus config device list navidrome --project media
+      register: navidrome_devices_post
+      changed_when: false
+
+    - name: Expose the Navidrome web UI to the host
+      ansible.builtin.command:
+        cmd: >-
+          incus config device add navidrome navidrome-web proxy
+          listen=tcp:0.0.0.0:{{ navidrome_port }}
+          connect=tcp:127.0.0.1:{{ navidrome_port }}
+          --project media
+      when: "'navidrome-web' not in navidrome_devices_post.stdout_lines"
+
+    # ---------------------------------------------------------------- #
+    # Kavita — ebooks / PDFs                                            #
+    # ---------------------------------------------------------------- #
+    - name: Init the kavita instance
+      ansible.builtin.command:
+        cmd: incus init {{ kavita_image }} kavita --project media
+      when: "'kavita' not in (media_instances.stdout | from_json | map(attribute='name') | list)"
+
+    - name: Check kavita's current devices
+      ansible.builtin.command: incus config device list kavita --project media
+      register: kavita_devices
+      changed_when: false
+
+    # /kavita/config is hardcoded upstream and must not be changed — the
+    # container refuses to start if its config lives anywhere else.
+    - name: Add kavita's config disk device
+      ansible.builtin.command:
+        cmd: >-
+          incus config device add kavita config disk
+          source={{ kavita_config_dir }} path=/kavita/config
+          --project media
+      when: "'config' not in kavita_devices.stdout_lines"
+
+    - name: Add kavita's Livros library disk device (read-only)
+      ansible.builtin.command:
+        cmd: >-
+          incus config device add kavita livros disk
+          source={{ media_livros_dir }} path=/books readonly=true
+          --project media
+      when: "'livros' not in kavita_devices.stdout_lines"
+
+    - name: Check whether kavita is running
+      ansible.builtin.command: incus list kavita --project media -f json
+      register: kavita_state
+      changed_when: false
+
+    - name: Start the kavita instance
+      ansible.builtin.command: incus start kavita --project media
+      when: (kavita_state.stdout | from_json | first).status != 'Running'
+
+    - name: Re-check kavita's devices before adding the web proxy
+      ansible.builtin.command: incus config device list kavita --project media
+      register: kavita_devices_post
+      changed_when: false
+
+    - name: Expose the Kavita web UI to the host
+      ansible.builtin.command:
+        cmd: >-
+          incus config device add kavita kavita-web proxy
+          listen=tcp:0.0.0.0:{{ kavita_port }}
+          connect=tcp:127.0.0.1:{{ kavita_port }}
+          --project media
+      when: "'kavita-web' not in kavita_devices_post.stdout_lines"

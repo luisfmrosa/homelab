@@ -129,3 +129,73 @@ immich_version: release
 # with the "ghcr:" OCI remote (see incus.yml) since this image lives on
 # ghcr.io, unlike valkey's docker.io.
 immich_postgres_image: "ghcr:immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0"
+
+# --- Media stack (Jellyfin, Navidrome, Kavita — see media.yml/media.tf) ---
+
+# The pre-existing media library on /naspool, already exported read-write
+# over Samba by naspool-samba. The media services mount subdirectories of
+# this READ-ONLY (readonly=true on each disk device) — Samba stays the only
+# writer, so a misbehaving service can't corrupt the archive. Nothing here
+# is created or chowned by media.yml, unlike the Immich directories above.
+media_library_root: /naspool/biblioteca
+
+media_filmes_dir: "{{ media_library_root }}/Filmes"
+media_videos_dir: "{{ media_library_root }}/Videos"
+media_musicas_dir: "{{ media_library_root }}/Musicas"
+media_livros_dir: "{{ media_library_root }}/Livros"
+# Note the space in this one — every `incus config device add` using it
+# has to quote it (see media.yml's navidrome tasks).
+media_itunes_dir: "{{ media_library_root }}/Biblioteca iTunes"
+
+# Writable config/cache/database directories for the three services,
+# deliberately on a separate tree from media_library_root above so no
+# service ever writes inside the library it indexes. Created and chowned
+# by media.yml (unlike the library itself).
+media_config_root: /naspool/media
+
+jellyfin_config_dir: "{{ media_config_root }}/jellyfin/config"
+jellyfin_cache_dir: "{{ media_config_root }}/jellyfin/cache"
+navidrome_data_dir: "{{ media_config_root }}/navidrome/data"
+kavita_config_dir: "{{ media_config_root }}/kavita/config"
+
+# Host-side base of the "media" Incus project's unprivileged UID/GID shift.
+# Assigned per-project, NOT global — this happens to match Immich's
+# immich_idmap_base but must not be assumed to: verify with
+#   incus config get jellyfin volatile.idmap.current --project media
+# and update this if the "Hostid" reported there differs.
+#
+# Unlike Immich (postgres=999, node=1000), all three media images run their
+# processes as root (uid/gid 0) in-container — verified by launching each
+# image throwaway and running `id`. So the writable directories above are
+# chowned to exactly this base + 0, with no per-service offset.
+#
+# The read-only library mounts need no chown at all: /naspool/biblioteca is
+# already world-readable (dirs drwxr-xr-x, files -rw-r--r--), so the
+# shifted root can traverse and read it as-is — and chowning it would
+# rewrite the ownership of the user's own Samba archive.
+media_idmap_base: 1000000
+
+# Ports each service's web UI listens on inside its container, forwarded to
+# the homelab host (and so to the LAN and tailnet, same as Immich's 2283)
+# by a proxy device per instance.
+jellyfin_port: 8096
+navidrome_port: 4533
+kavita_port: 5000
+
+# OCI images for the three services. Jellyfin's official image is on
+# ghcr.io; the other two publish to docker.io — both remotes are already
+# configured by incus.yml under luis's own client config.
+jellyfin_image: "ghcr:jellyfin/jellyfin"
+
+# PCI address of the GPU passed to jellyfin for QuickSync hardware
+# transcoding — this homelab's only GPU is the Intel Gemini Lake iGPU
+# (UHD Graphics 605, [8086:3184]) at 0000:00:02.0. Find it on a new host
+# with `lspci -nn | grep -i vga`, or by following /dev/dri/by-path/*-render.
+#
+# Selected by PCI address rather than Incus's `id=` property: `id` means
+# the DRM *card number* ("0" for card0), not the render node filename, so
+# `id=renderD128` fails at instance start with "Failed to detect requested
+# GPU device" (confirmed in practice). `pci=` is unambiguous either way.
+jellyfin_gpu_pci: "0000:00:02.0"
+navidrome_image: "docker:deluan/navidrome:latest"
+kavita_image: "docker:jvmilazz0/kavita:latest"

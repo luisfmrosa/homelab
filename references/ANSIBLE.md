@@ -13,6 +13,7 @@ This document describes what is configured in the homelab using Ansible.
 6. ~~Export naspool over Samba, reachable over LAN and tailnet~~ — done, see `src/ansible/playbooks/samba.yml`. NFS was attempted too but dropped — see the playbook's own header comment and `src/opentofu/naspool.tf` for why.
 7. ~~Prepare naspool for S3 storage buckets~~ — done, see `src/ansible/playbooks/naspool-buckets.yml`.
 8. ~~Deploy Immich~~ — done, see `src/ansible/playbooks/immich.yml`.
+9. ~~Deploy the media stack (Jellyfin, Navidrome, Kavita)~~ — done, see `src/ansible/playbooks/media.yml`.
 
 ## Playbooks
 
@@ -83,6 +84,47 @@ This document describes what is configured in the homelab using Ansible.
   * Requires `immich_db_password` set in the gitignored `group_vars/all/01-local.yml` (kept out of git like `samba_passwords`) before running.
   * Run with: `ansible-playbook -i src/ansible/hosts src/ansible/playbooks/immich.yml -K` (needs `-K` for sudo, for the directory-creation/chown tasks only).
   * Reachable at `http://<homelab-ip>:2283`. Verified end-to-end: all 4 instances running, Postgres accepting connections with the `vchord`/`vector` extensions loaded, inter-container DNS resolving, and the web UI returning a normal `200 OK`.
+
+* `src/ansible/playbooks/media.yml` — targets `[myhosts]` (the homelab host itself, over SSH), same reasoning as `immich.yml`: the instances don't exist yet for `incus exec` to target. Deploys three independent Incus OCI application containers into the isolated `media` project created by `src/opentofu/media.tf` — `jellyfin` (`ghcr:jellyfin/jellyfin`, video), `navidrome` (`docker:deluan/navidrome:latest`, music) and `kavita` (`docker:jvmilazz0/kavita:latest`, ebooks/PDFs). Structurally the same as `immich.yml` (`incus init` → `incus config device add` → `incus start`, every step guarded by checking its **own** state fresh rather than a single pre-play "does the instance exist" snapshot), with four deliberate differences:
+  * **The media library is mounted read-only and is never chowned.** Each library device carries `readonly=true`, so the services can read and stream `/naspool/biblioteca` but cannot write to it — Samba (`naspool-samba`) remains the only writer. No chown is applied to those paths either: they're already world-readable (dirs `drwxr-xr-x`, files `-rw-r--r--`, owned by uid 993), so the containers' shifted root can read them as-is, and chowning would rewrite the ownership of the user's own archive. This is the opposite of `immich.yml`, where every bind mount is writable and must be pre-chowned.
+  * **All three images run as root (uid/gid 0) in-container** — verified by launching each image as a throwaway instance and running `id`, not assumed. So the writable config directories under `/naspool/media/` chown to `media_idmap_base + 0` with no per-service offset, unlike Immich's three different ones (999 postgres / 1000 node / 0 immich-ml). `media_idmap_base` (`00-defaults.yml`, `1000000`) was likewise verified empirically for **this** project (`volatile.idmap.current` → `Hostid: 1000000`, `Nsid: 0`) rather than carried over from Immich's — the shift is assigned per-project, so it must not be assumed to match.
+  * **Jellyfin gets a `gpu` device** for QuickSync hardware transcoding, which requires `restricted.devices.gpu = "allow"` on the project (`media.tf`). Selected by **PCI address** (`pci=0000:00:02.0`, via `jellyfin_gpu_pci`), *not* by `id=`: Incus's `id` property for a physical GPU means the DRM **card number** (`0` for `card0`), not the render node's filename, so `id=renderD128` fails at instance start with `Failed to start device "gpu": Failed to detect requested GPU device` — confirmed in practice on the first run. No `gid=` property is set: the container runs as root and can open the render node regardless of the host's `render` group (GID 992). ⚠️ Beyond that startup error, this is the single most likely thing to **silently degrade rather than fail** — if the device were present but unusable, Jellyfin falls back to software transcoding with no error, which this host's J5005 cannot sustain. Verify explicitly (see below).
+  * **No inter-instance wiring at all** — unlike Immich's `DB_HOSTNAME`/`REDIS_HOSTNAME`, these three never talk to each other, so nothing depends on `media-br0`'s dnsmasq resolving instance names.
+  * `media_itunes_dir` (`/naspool/biblioteca/Biblioteca iTunes`) contains a **space**, so its `source=` token is quoted in the device-add command; without quoting the shell splits it and `incus` sees a stray `iTunes` argument.
+  * ⚠️ **Mount paths must not nest under a directory the image doesn't already have.** Navidrome's two libraries were first mounted at `/music/Musicas` and `/music/iTunes`, expecting `ND_MUSICFOLDER=/music` to scan the merged tree. That silently produced an **empty library**: since `/music` doesn't exist in the OCI image, Incus creates a `tmpfs` at that path *after* attaching the child mounts, layering it over them and burying both. `/proc/mounts` inside the container showed exactly that — both btrfs mounts followed by `none /music tmpfs`. Fixed by mounting at top-level paths Incus creates directly (`/musicas`, `/itunes`). Jellyfin and Kavita are unaffected because `/media` and `/kavita` already exist in their images — so this only bites where the parent is invented. Note the failure mode: no error anywhere, just an empty library.
+  * Consequence of that fix: `ND_MUSICFOLDER` takes a **single** path, so only `/musicas` is scanned (4149 tracks). The iTunes library stays mounted and readable at `/itunes` but is not indexed. To include it, either merge the two host trees under one parent directory and point `ND_MUSICFOLDER` there, or run a second Navidrome instance.
+  * Kavita's config path `/kavita/config` is **hardcoded upstream** and must not be changed.
+  * Each service exposes exactly one port to the host/LAN/tailnet via its own `proxy` device: Jellyfin `8096`, Navidrome `4533`, Kavita `5000`.
+  * Requires no secrets — nothing needs adding to the gitignored `01-local.yml` (unlike `immich_db_password`).
+  * Run with: `ansible-playbook -i src/ansible/hosts src/ansible/playbooks/media.yml -K` (needs `-K` for sudo, for the config-directory creation/chown tasks only).
+  * Verified end-to-end on first deploy: all three instances RUNNING on `media-br0`; Jellyfin sees 164 files in Filmes and 1511 in Videos, Navidrome scanned 4149 tracks, Kavita sees 89 PDFs among 705 files; all three library mounts reject writes; all three web UIs respond (`302`/`302`/`200`); QuickSync confirmed with a real VAAPI H.264 encode; `headscale`, `naspool-samba` and all four Immich instances unaffected.
+
+#### Verifying the media stack
+
+Jellyfin's hardware transcoding fails *quietly*, so check it explicitly rather than assuming a green playbook run means it works:
+
+```bash
+incus exec jellyfin --project media -- ls -l /dev/dri     # renderD128 must be present
+incus exec jellyfin --project media -- ls /media/filmes   # library visible
+incus exec jellyfin --project media -- touch /media/filmes/x   # MUST fail (read-only)
+```
+
+Device presence alone isn't proof — run a **real VAAPI encode** through Jellyfin's own bundled ffmpeg, which is what actually exercises QuickSync:
+
+```bash
+incus exec jellyfin --project media -- /usr/lib/jellyfin-ffmpeg/ffmpeg -hide_banner \
+  -init_hw_device vaapi=va:/dev/dri/renderD128 \
+  -f lavfi -i testsrc=size=640x480:rate=1:duration=1 \
+  -vf 'format=nv12,hwupload' -c:v h264_vaapi -f null -
+```
+
+A successful run ends with a `frame= 1 ... speed=24.6x` line and no errors — confirmed working on this host. (Note that `ls /usr/lib/x86_64-linux-gnu/dri/` inside the container looks *empty* of VAAPI drivers; that's a red herring, since jellyfin-ffmpeg bundles its own at a different path.)
+
+Then play a file and check Jellyfin's **Dashboard → Activity**: it should report `Direct Play`, or `Transcode (hw)` — if it says `Transcode (sw)` the GPU isn't being used.
+
+**Codec coverage caveat.** The J5005's QuickSync accelerates H.264 and HEVC. The existing library is mostly `.avi` (Xvid/DivX), `.mpg` and `.mod` (MPEG-2) — **none of which Gemini Lake decodes in hardware**. Those formats direct-play fine on most native clients, but browser playback typically forces a transcode, which lands on the CPU in software. This is a hardware limit, not a misconfiguration.
+
+**Metadata caveat.** `Filmes` filenames don't follow Jellyfin's `Title (Year).ext` convention, so automatic metadata matching will largely fail there until files are renamed. `Videos` is 1171 `.mod`/`.moi` camcorder files from 2006 and should be added as a **Home Videos and Photos** library type (no scraping). `Livros` is 89 PDFs mixed with ~460 GIF/HTML/BMP files from a scraped documentation dump, so Kavita's library will look untidy until the PDFs are separated out. Libraries themselves are configured in each service's web UI — none of the three supports declarative library config, so that step stays manual.
 
 ### Renewing the headplane API key
 
