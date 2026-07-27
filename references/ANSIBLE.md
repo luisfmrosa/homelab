@@ -122,9 +122,33 @@ A successful run ends with a `frame= 1 ... speed=24.6x` line and no errors — c
 
 Then play a file and check Jellyfin's **Dashboard → Activity**: it should report `Direct Play`, or `Transcode (hw)` — if it says `Transcode (sw)` the GPU isn't being used.
 
-**Codec coverage caveat.** The J5005's QuickSync accelerates H.264 and HEVC. The existing library is mostly `.avi` (Xvid/DivX), `.mpg` and `.mod` (MPEG-2) — **none of which Gemini Lake decodes in hardware**. Those formats direct-play fine on most native clients, but browser playback typically forces a transcode, which lands on the CPU in software. This is a hardware limit, not a misconfiguration.
+**Codec coverage.** The J5005's QuickSync accelerates H.264 and HEVC only. Measured across the actual library: `Filmes` is 47 mpeg4 (Xvid) + 28 h264 + 4 msmpeg4v3 + 2 mpeg1video; `Videos` is entirely mpeg2video. So ~58% of Filmes and 100% of Videos cannot use hardware **decode**. That alone is fine — software-decoding Xvid and hardware-encoding H.264 benchmarks at **21×** realtime on this host, and pure software end-to-end still manages **15×**. Old DVD-rip resolutions (620×256, 640×352) are not demanding.
 
-**Metadata caveat.** `Filmes` filenames don't follow Jellyfin's `Title (Year).ext` convention, so automatic metadata matching will largely fail there until files are renamed. `Videos` is 1171 `.mod`/`.moi` camcorder files from 2006 and should be added as a **Home Videos and Photos** library type (no scraping). `Livros` is 89 PDFs mixed with ~460 GIF/HTML/BMP files from a scraped documentation dump, so Kavita's library will look untidy until the PDFs are separated out. Libraries themselves are configured in each service's web UI — none of the three supports declarative library config, so that step stays manual.
+**⚠️ "Enable hardware encoding" must be OFF, or non-H.264/HEVC files fail to play in a browser.** This is an upstream Jellyfin bug, not a configuration error and not a hardware limit. For a source Jellyfin can't hardware-decode (anything in the list above except h264), it still emits a filter chain ending in `hwupload=derive_device=vaapi` while passing **no** `-init_hw_device`/`-vaapi_device`/`-hwaccel`. With the decode in software there is no hardware context to *derive* from, so ffmpeg aborts before writing a frame:
+
+```
+Stream #0:0 -> #0:0 (mpeg4 (native) -> h264 (h264_vaapi))
+[hwupload] A hardware device reference is required to upload frames to.
+Conversion failed!
+```
+
+Unchecking MPEG2/VC1/VP8/VP9 under "Enable hardware decoding for" does **not** help — there is no MPEG4 checkbox at all, and the broken chain is generated regardless. The only server-side fix is unchecking **Enable hardware encoding** (Dashboard → Playback → Transcoding), which drops `hwupload` from the chain entirely. Cost: the 28 h264 films lose hardware encoding too, since the toggle is global. Tracked upstream at [jellyfin#14911](https://github.com/jellyfin/jellyfin/issues/14911) and [jellyfin#13071](https://github.com/jellyfin/jellyfin/issues/13071) — re-test after a Jellyfin upgrade and re-enable if fixed.
+
+Worth knowing: the transcode is usually **unnecessary**. Jellyfin's own probe reports `"SupportsDirectPlay": true` for these files — it's browser playback that requests the transcode. Native clients (Jellyfin Android/iOS/Android TV, Infuse, Findroid) direct-play Xvid and MPEG-2 with no transcode, no CPU cost and no quality loss, sidestepping the bug entirely.
+
+**Metadata caveat.** `Filmes` filenames don't follow Jellyfin's `Title (Year).ext` convention, so automatic metadata matching will largely fail there until files are renamed. `Videos` is 1171 `.mod`/`.moi` camcorder files from 2006 and should be added as a **Home Videos and Photos** library type (no scraping). Libraries themselves are configured in each service's web UI — none of the three supports declarative library config, so that step stays manual.
+
+#### One-off reorganization of `/naspool/biblioteca/Livros` (2026-07-28)
+
+Kavita refuses any library whose root contains loose files ("One or more folders contains files at the root. Kavita does not support this.") — it expects one folder per book. `Livros` had 70 files sitting at its root, so it was reorganized **in place**, which also changes what Samba users see. Done manually via two throwaway scripts, not codified as a playbook: it's a one-time data migration against the user's own archive, not reproducible infrastructure. Recorded here so the change isn't a mystery later.
+
+* A BTRFS rollback snapshot was taken first at `/naspool/.snapshots/pre-livros-reorg` (same idiom as `naspool-buckets.yml`'s `pre-incus-buckets`). Restore a file from it with `cp -a /naspool/.snapshots/pre-livros-reorg/biblioteca/Livros/... `; reclaim it once confident with `sudo btrfs subvolume delete /naspool/.snapshots/pre-livros-reorg`.
+* **Foldering:** each of the 70 loose root files moved into its own folder named after the file's basename. Three basenames existed as both `.pdf` and `.zip` (e.g. `descartes_discurso_do_metodo`) and deliberately share one folder. Two macOS `.DS_Store` files were deleted. The 5 pre-existing subdirectories were left untouched. Net: 703 files, down from 705.
+* **Zip extraction:** 25 `.zip` archives were extracted in place and then removed. They split into two kinds, treated differently:
+  * **1 web book** — `livro_l'amazonie.zip` is an old scraped website (15 HTML pages + 57 images, no PDF). Extracted **in full**: the HTML and images *are* the book. ⚠️ Kavita reads EPUB/PDF/CBZ/CBR but **not raw HTML**, so this one is preserved and browsable over Samba but won't render as a book in Kavita — it would need converting to EPUB (e.g. Calibre's `ebook-convert`).
+  * **23 document books** — a single PDF (or one CHM), extracted; the bundled `Ateus.net.url` download-site advert was skipped (20 of them). 5 PDFs already existed on disk byte-identical and were not duplicated.
+  * **1 corrupt archive** — `Awk Languaje Programming- Enero 1996.zip` was 0 bytes and not a zip at all (verified 0 bytes in the snapshot too, so empty since 2006). Deleted along with its then-empty folder.
+* Net effect: 90 files extracted, all 25 zips removed, 17 genuinely new PDFs (Camus, Kant, Dante, Foucault, Sade…) now visible to Kavita that were previously locked inside archives. Verified after the fact: 0 files at the root, 0 zips remaining, 69 subdirectories, **106 PDFs (up from 89)**, 767 files total, and L'Amazonie's 15 HTML pages intact.
 
 ### Renewing the headplane API key
 
