@@ -1,0 +1,241 @@
+---
+# Deploys Immich (self-hosted photo management) as 4 separate Incus OCI
+# "application containers" (Incus 6.3+, `incus launch docker:...`/
+# `incus launch ghcr:...`) inside the "immich" Incus project — one
+# instance per upstream docker-compose.yml service (immich-server,
+# immich-machine-learning, redis/valkey, postgres+VectorChord) — rather
+# than a single Docker-in-LXC container running the whole compose stack.
+#
+# Targets the homelab host directly over SSH (myhosts), not
+# community.general.incus/`incus exec` like headscale.yml/samba.yml,
+# because these instances don't exist yet for `incus exec` to target —
+# same reasoning as incus.yml itself.
+#
+# The "immich" project, its dedicated immich-br0 bridge network, and the
+# project's own default profile (eth0 -> immich-br0) are created by
+# src/opentofu/immich.tf, applied before this playbook ever runs — Incus
+# instances aren't declared there due to an open lxc/incus provider bug
+# with OCI image resolution (see immich.tf's own header comment), so their
+# creation lives here instead, using the `docker`/`ghcr` OCI remotes
+# incus.yml already configures.
+# All `incus` tasks below run as the plain SSH login user (luis, no
+# become/sudo at all) — the docker/ghcr/gitlab OCI remotes incus.yml
+# registers live in that user's own Incus client config
+# (~/.config/incus/config.yml), not root's (confirmed in practice:
+# running them as root instead gives "The remote 'ghcr' doesn't exist",
+# since Incus remotes are per-user client state, not daemon-side). luis
+# is already in the incus-admin group (incus.yml), so it can talk to the
+# Incus socket without needing root at all. Only the host
+# directory-creation task needs actual root, via its own `become: true`.
+- name: Deploy Immich as Incus OCI application containers
+  hosts: myhosts
+
+  tasks:
+    - name: Ensure the Immich data directories exist on /naspool
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - "{{ immich_upload_dir }}"
+        - "{{ immich_postgres_dir }}"
+        - "{{ immich_model_cache_dir }}"
+      become: true
+
+    # These OCI containers are unprivileged, so their internal UIDs are
+    # shifted to a host-side range (this project's shifted base is 1000000
+    # for both uid and gid, confirmed identical across immich-ml/immich-db
+    # via `incus config get <instance> volatile.idmap.current --project
+    # immich` — it's assigned per-project, not per-instance). A plain bind
+    # mount keeps the host path's existing ownership (root:root) as-is, so
+    # each container's own process can't chown/chmod its data directory at
+    # startup ("Operation not permitted") — confirmed in practice, and the
+    # resulting crash-on-boot left orphaned lxc.monitor.* cgroups behind on
+    # every retry. `shift=true` (idmapped mounts) would normally fix this
+    # but is rejected outright ("shift property cannot be used with a
+    # restricted source path") since this project's disk access is scoped
+    # via restricted.devices.disk.paths (immich.tf) — Incus disallows
+    # combining the two as a privilege-escalation guard. `raw.idmap` is
+    # blocked too (needs restricted.containers.lowlevel, which this project
+    # also doesn't grant). So instead: pre-chown each host directory to
+    # <project idmap base> + <in-container uid the process actually runs
+    # as>, found via a throwaway `incus exec <image> -- id <user>` test.
+    # postgres = uid/gid 999 in ghcr.io/immich-app/postgres; node = uid/gid
+    # 1000 in ghcr.io/immich-app/immich-server.
+    - name: Chown the Postgres data directory to match immich-db's shifted uid
+      ansible.builtin.file:
+        path: "{{ immich_postgres_dir }}"
+        owner: "{{ immich_idmap_base + 999 }}"
+        group: "{{ immich_idmap_base + 999 }}"
+        recurse: true
+      become: true
+
+    - name: Chown the upload directory to match immich-server's shifted uid
+      ansible.builtin.file:
+        path: "{{ immich_upload_dir }}"
+        owner: "{{ immich_idmap_base + 1000 }}"
+        group: "{{ immich_idmap_base + 1000 }}"
+        recurse: true
+      become: true
+
+    # immich-machine-learning's image has no dedicated non-root user —
+    # every process, including the actual ML server, runs as root (uid 0)
+    # inside the container, which is why this one has run fine without a
+    # chown so far. Fixed anyway, matching the pattern above, since it's
+    # only run empty so far and would hit the exact same failure the first
+    # time it actually needs to write/chown something in a real model
+    # download. Root (uid/gid 0) maps to the project's shifted base itself
+    # (1000000 + 0), not a further offset.
+    - name: Chown the model cache directory to match immich-ml's shifted uid
+      ansible.builtin.file:
+        path: "{{ immich_model_cache_dir }}"
+        owner: "{{ immich_idmap_base }}"
+        group: "{{ immich_idmap_base }}"
+        recurse: true
+      become: true
+
+    - name: Check which Immich instances already exist
+      ansible.builtin.command: incus list --project immich -f json
+      register: immich_instances
+      changed_when: false
+
+    # `incus launch -d name,disk,...` only OVERRIDES a device that already
+    # exists on a profile applied to the instance — it can't add a
+    # brand-new one (confirmed: "Cannot override device ...: device not
+    # found in profiles"). The "immich" project's default profile has no
+    # such device, so each instance needing a bind mount is instead
+    # created stopped (`incus init`, with env vars still set inline via
+    # -c — those aren't override-only like devices), given its disk
+    # device via a separate `incus config device add`, then started —
+    # ensures the mount exists before the OCI entrypoint's first run
+    # rather than needing a restart partway through initialization.
+    #
+    # Each step's `when:` is guarded independently (device presence,
+    # checked fresh per step) rather than all three keyed off the same
+    # "instance doesn't exist yet" snapshot — instance creation and its
+    # disk device attachment are NOT atomic (confirmed in practice: a run
+    # that created immich-db but then failed on the device-add step, due
+    # to a since-fixed project restriction, left immich-db existing but
+    # with no pgdata device; a naive "only act if instance is new" guard
+    # would then skip the device-add forever on every subsequent run).
+    - name: Init the immich-db instance (Postgres + VectorChord)
+      ansible.builtin.command:
+        cmd: >-
+          incus init {{ immich_postgres_image }} immich-db
+          --project immich
+          -c environment.POSTGRES_USER={{ immich_db_username }}
+          -c environment.POSTGRES_PASSWORD={{ immich_db_password }}
+          -c environment.POSTGRES_DB={{ immich_db_name }}
+      when: "'immich-db' not in (immich_instances.stdout | from_json | map(attribute='name') | list)"
+
+    - name: Check immich-db's current devices
+      ansible.builtin.command: incus config device list immich-db --project immich
+      register: immich_db_devices
+      changed_when: false
+
+    # Ownership of immich_postgres_dir is fixed up above (chown to the
+    # project's shifted uid/gid) instead of using shift=true here, which
+    # Incus rejects for disk devices under a restricted.devices.disk.paths
+    # allowlist (see that task's comment for the full story).
+    - name: Add immich-db's Postgres data disk device
+      ansible.builtin.command:
+        cmd: >-
+          incus config device add immich-db pgdata disk
+          source={{ immich_postgres_dir }} path=/var/lib/postgresql/data
+          --project immich
+      when: "'pgdata' not in immich_db_devices.stdout_lines"
+
+    - name: Check whether immich-db is running
+      ansible.builtin.command: incus list immich-db --project immich -f json
+      register: immich_db_state
+      changed_when: false
+
+    - name: Start the immich-db instance
+      ansible.builtin.command: incus start immich-db --project immich
+      when: (immich_db_state.stdout | from_json | first).status != 'Running'
+
+    - name: Launch the immich-redis instance (Valkey)
+      ansible.builtin.command:
+        cmd: incus launch docker:valkey/valkey:9 immich-redis --project immich
+      when: "'immich-redis' not in (immich_instances.stdout | from_json | map(attribute='name') | list)"
+
+    - name: Init the immich-machine-learning instance
+      ansible.builtin.command:
+        cmd: incus init ghcr:immich-app/immich-machine-learning:{{ immich_version }} immich-ml --project immich
+      when: "'immich-ml' not in (immich_instances.stdout | from_json | map(attribute='name') | list)"
+
+    - name: Check immich-ml's current devices
+      ansible.builtin.command: incus config device list immich-ml --project immich
+      register: immich_ml_devices
+      changed_when: false
+
+    - name: Add immich-ml's model cache disk device
+      ansible.builtin.command:
+        cmd: >-
+          incus config device add immich-ml modelcache disk
+          source={{ immich_model_cache_dir }} path=/cache
+          --project immich
+      when: "'modelcache' not in immich_ml_devices.stdout_lines"
+
+    - name: Check whether immich-ml is running
+      ansible.builtin.command: incus list immich-ml --project immich -f json
+      register: immich_ml_state
+      changed_when: false
+
+    - name: Start the immich-ml instance
+      ansible.builtin.command: incus start immich-ml --project immich
+      when: (immich_ml_state.stdout | from_json | first).status != 'Running'
+
+    # DB_HOSTNAME/REDIS_HOSTNAME rely on Incus's built-in dnsmasq resolving
+    # instance names within immich-br0 (same mechanism as incusbr0) — see
+    # references/ANSIBLE.md for the verification step run once after first
+    # apply. If that ever stops resolving, switch these to the instances'
+    # static ipv4.address instead.
+    - name: Init the immich-server instance
+      ansible.builtin.command:
+        cmd: >-
+          incus init ghcr:immich-app/immich-server:{{ immich_version }} immich-server
+          --project immich
+          -c environment.DB_HOSTNAME=immich-db
+          -c environment.DB_USERNAME={{ immich_db_username }}
+          -c environment.DB_PASSWORD={{ immich_db_password }}
+          -c environment.DB_DATABASE_NAME={{ immich_db_name }}
+          -c environment.REDIS_HOSTNAME=immich-redis
+      when: "'immich-server' not in (immich_instances.stdout | from_json | map(attribute='name') | list)"
+
+    - name: Check immich-server's current devices
+      ansible.builtin.command: incus config device list immich-server --project immich
+      register: immich_server_devices_pre
+      changed_when: false
+
+    - name: Add immich-server's upload disk device
+      ansible.builtin.command:
+        cmd: >-
+          incus config device add immich-server uploads disk
+          source={{ immich_upload_dir }} path=/data
+          --project immich
+      when: "'uploads' not in immich_server_devices_pre.stdout_lines"
+
+    - name: Check whether immich-server is running
+      ansible.builtin.command: incus list immich-server --project immich -f json
+      register: immich_server_state
+      changed_when: false
+
+    - name: Start the immich-server instance
+      ansible.builtin.command: incus start immich-server --project immich
+      when: (immich_server_state.stdout | from_json | first).status != 'Running'
+
+    - name: Check whether immich-server already has its web proxy device
+      ansible.builtin.command: incus config device list immich-server --project immich
+      register: immich_server_devices
+      changed_when: false
+
+    # The only port exposed to the host/LAN/tailnet — Postgres, Redis, and
+    # the ML service stay reachable only within immich-br0.
+    - name: Expose the Immich web UI (2283/tcp) to the host
+      ansible.builtin.command:
+        cmd: >-
+          incus config device add immich-server immich-web proxy
+          listen=tcp:0.0.0.0:2283 connect=tcp:127.0.0.1:2283
+          --project immich
+      when: "'immich-web' not in immich_server_devices.stdout_lines"

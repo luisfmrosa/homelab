@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ssh luis@homelab \"incus list test-uid-check-2 --project immich 2>&1\")",
+      "Bash(ssh luis@homelab \"incus console test-uid-check-2 --project immich --show-log 2>&1 | tail -60\")",
+      "Bash(ssh luis@homelab \"incus config show test-uid-check-2 --project immich 2>&1 | grep -A2 -i config\")",
+      "Bash(ssh luis@homelab \"incus config set test-uid-check-2 environment.DB_HOSTNAME=127.0.0.1 --project immich 2>&1; incus start test-uid-check-2 --project immich 2>&1\")",
+      "Bash(ssh luis@homelab \"incus file pull test-uid-check-2/etc/passwd --project immich - 2>&1\")",
+      "Bash(ssh luis@homelab \"incus delete test-uid-check-2 --project immich --force 2>&1\")",
+      "Bash(ssh luis@homelab \"incus list --project immich 2>&1\")",
+      "Read(//c/Users/falec/.ssh/**)",
+      "Read(//c//**)",
+      "Read(//etc/**)",
+      "Bash(getent hosts *)",
+      "Bash(nslookup homelab *)"
+    ]
+  }
+}

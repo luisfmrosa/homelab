@@ -86,3 +86,46 @@ tailscale_headscale_user: luis
 # Kept out of git since it's personal/account data, not infrastructure —
 # same reasoning as headscale_users above.
 samba_users: []
+
+# Host paths bind-mounted into the Immich OCI instances (see immich.yml),
+# all under /naspool rather than the system disk — same reasoning as the
+# naspool-samba/naspool-buckets data: it's durable, RAID1-protected
+# storage, and the actual photo library/database are worth protecting
+# that way (the model-cache is re-downloadable and low-value, but kept
+# alongside the others for consistency).
+immich_upload_dir: /naspool/immich/upload
+immich_postgres_dir: /naspool/immich/postgres
+immich_model_cache_dir: /naspool/immich/model-cache
+
+# Host-side base of the "immich" Incus project's unprivileged UID/GID
+# shift, confirmed identical across every instance in the project (it's
+# assigned per-project, not per-instance) via `incus config get
+# <instance> volatile.idmap.current --project immich`. Used to chown
+# immich.yml's bind-mounted data directories to <this base> + <the
+# in-container UID the process actually runs as> — a plain bind mount
+# doesn't remap ownership, and shift=true/raw.idmap are both rejected by
+# Incus for this project (see immich.yml's chown tasks for the full
+# story), so pre-chowning the host path is the only remaining option.
+immich_idmap_base: 1000000
+
+# Postgres database/user name for the "immich-db" OCI instance (see
+# immich.yml). The password is deliberately not defaulted here — it's set
+# in the gitignored 01-local.yml as immich_db_password, same convention as
+# samba_passwords above, e.g.:
+#   immich_db_password: "CHANGEME"
+immich_db_name: immich
+immich_db_username: immich
+
+# Pinned Immich release version, matching across the server and
+# machine-learning images since Immich requires both on the same release.
+# Bump, re-run immich.yml, and check the Immich release notes for any
+# required migration steps. https://github.com/immich-app/immich/releases
+immich_version: release
+
+# Immich's own Postgres image (VectorChord + pgvector bundled), versioned
+# independently of immich_version above since it changes far less often —
+# check https://github.com/immich-app/immich/blob/main/docker-compose.yml
+# for the version pairing before bumping either one on its own. Prefixed
+# with the "ghcr:" OCI remote (see incus.yml) since this image lives on
+# ghcr.io, unlike valkey's docker.io.
+immich_postgres_image: "ghcr:immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0"
