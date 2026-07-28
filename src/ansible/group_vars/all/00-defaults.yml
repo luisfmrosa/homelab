@@ -199,3 +199,50 @@ jellyfin_image: "ghcr:jellyfin/jellyfin"
 jellyfin_gpu_pci: "0000:00:02.0"
 navidrome_image: "docker:deluan/navidrome:latest"
 kavita_image: "docker:jvmilazz0/kavita:latest"
+
+# --- Coolify (see coolify.yml/coolify.tf) ---
+
+# Coolify is an evaluation scratchpad, not a place to run anything
+# permanent — see coolify.tf's header. The control plane lives in the
+# "coolify" instance; apps get deployed onto the sandbox instances below.
+
+# Host-facing port for Coolify's web UI, forwarded by the "coolify-web"
+# proxy device declared in coolify.tf. Coolify's realtime websocket ports
+# (6001/6002) are deliberately NOT forwarded — see that file.
+coolify_port: 8000
+
+# The sandbox "remote servers" Coolify deploys onto. Each one gets sshd,
+# Docker, and Coolify's own public key in root's authorized_keys. Adding a
+# second is this list plus a matching incus_instance in coolify.tf.
+coolify_sandboxes:
+  - coolify-sandbox
+
+# Subnet pool Coolify hands out to the per-app Docker networks it creates.
+#
+# This MUST be overridden. Coolify's own default is 10.0.0.0/8, which
+# contains every Incus bridge on this host — immich-br0 (10.10.10.0/24),
+# media-br0 (10.10.20.0/24), coolify-br0 (10.10.30.0/24) and incusbr0
+# (10.183.191.0/24). Docker only carves out a /24 at a time, as apps are
+# created, so the collision wouldn't appear at install: it would surface
+# much later as one of those bridges mysteriously breaking, with nothing
+# obviously connecting it to Coolify.
+#
+# 10.99.0.0/16 is clear of all of them and still leaves 256 /24s for apps.
+# Written into /data/coolify/source/.env BEFORE the installer first runs,
+# so no 10.0.0.0/8 network is ever created even momentarily.
+coolify_network_pool: "10.99.0.0/16"
+coolify_network_pool_size: 24
+
+# Same idea for the sandbox servers, but a DIFFERENT /16 — the control
+# plane and the sandbox each run their own Docker daemon, and each hands
+# out subnets from its own pool with no knowledge of the other. Sharing one
+# range would eventually have both allocate the same subnet, which breaks
+# routing between them in ways that look like random connectivity loss.
+#
+# Unlike the control plane's, this one isn't fixing a collision: Docker's
+# own default (172.16.0.0/12) doesn't overlap anything on this host. It's
+# fixing the *size* — Docker's default carves out a /16 per network, and
+# Coolify creates one per project, so the default pool runs dry after ~16
+# projects with an opaque "no available non-overlapping IPv4 address pool"
+# error mid-deploy. A /24 size gives 256 instead.
+coolify_sandbox_network_pool: "10.98.0.0/16"

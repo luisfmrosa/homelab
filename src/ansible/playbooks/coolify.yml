@@ -1,0 +1,332 @@
+---
+# Installs Coolify (a self-hosted PaaS) into the "coolify" Incus instance,
+# and prepares the "coolify-sandbox" instance(s) to act as Coolify "remote
+# servers" it can deploy onto. Both instances themselves are created by
+# src/opentofu/coolify.tf — see that file for what Coolify is doing in this
+# homelab (short version: an evaluation scratchpad, deliberately not the way
+# anything permanent gets run) and for why nesting is granted there.
+#
+# Unlike every other playbook here, this one installs Docker and lets an
+# upstream install script run inside a container. That's inherent to what
+# Coolify is: its control plane IS a 4-container Docker Compose stack, and
+# the apps it deploys are Docker containers too. It was verified to work on
+# this host (Incus 7.2, kernel 6.12.95) before any of this was written —
+# Docker 29.6.2, overlayfs storage driver, full compose stacks, and Coolify
+# 4.1.2 reporting healthy. See references/ANSIBLE.md for that table.
+#
+# Targets the homelab host directly over SSH (myhosts), not
+# community.general.incus/`incus exec`, for the same reason as
+# immich.yml/media.yml: the loop below has to reach the `incus` CLI itself,
+# and at first run there's no guarantee the instances exist for `incus exec`
+# to target.
+#
+# All `incus` tasks run as the plain SSH login user (luis, no become/sudo),
+# like media.yml — luis is already in the incus-admin group. Nothing here
+# needs root on the *host* at all: everything happens inside containers.
+- name: Install Coolify and prepare its sandbox servers
+  hosts: myhosts
+
+  tasks:
+    # ---------------------------------------------------------------- #
+    # Both instances — start and wait for usable networking             #
+    # ---------------------------------------------------------------- #
+
+    - name: Check the state of the coolify instances
+      ansible.builtin.command: incus list --project coolify -f json
+      register: coolify_instances
+      changed_when: false
+
+    - name: Start any stopped coolify instances
+      ansible.builtin.command: "incus start {{ item }} --project coolify"
+      loop: "{{ ['coolify'] + coolify_sandboxes }}"
+      when: >-
+        (coolify_instances.stdout | from_json
+          | selectattr('name', 'equalto', item)
+          | map(attribute='status') | first | default('Stopped')) != 'Running'
+
+    # `incus start` returns as soon as the container's init has been
+    # spawned, well before DHCP has handed out a lease and DNS works. Every
+    # task below either apt-installs something or curls an install script,
+    # so without this they race and fail on a fresh instance.
+    - name: Wait for each instance to have working DNS
+      ansible.builtin.command: >-
+        incus exec {{ item }} --project coolify
+        -- getent hosts deb.debian.org
+      loop: "{{ ['coolify'] + coolify_sandboxes }}"
+      register: coolify_dns
+      until: coolify_dns is succeeded
+      retries: 30
+      delay: 2
+      changed_when: false
+
+    # ---------------------------------------------------------------- #
+    # Control plane — Coolify itself                                    #
+    # ---------------------------------------------------------------- #
+
+    - name: Check whether Coolify is already installed
+      ansible.builtin.command: >-
+        incus exec coolify --project coolify
+        -- test -d /data/coolify
+      register: coolify_installed
+      changed_when: false
+      failed_when: false
+
+    # The installer needs curl to fetch itself, and ca-certificates for the
+    # TLS verification it does. Everything else it installs on its own
+    # (Docker, openssh-server, jq, git, openssl).
+    - name: Install the Coolify installer's prerequisites
+      ansible.builtin.command: >-
+        incus exec coolify --project coolify
+        -- sh -c "apt-get update -qq && apt-get install -y -qq curl ca-certificates"
+      when: coolify_installed.rc != 0
+
+    # THE IMPORTANT ONE. Coolify defaults its per-app Docker network pool to
+    # 10.0.0.0/8, which contains every Incus bridge on this host. Writing
+    # .env before the installer runs means it reads these values on first
+    # boot and never creates a 10.0.0.0/8 network at all — as opposed to
+    # fixing it afterwards, by which point the collision may already exist.
+    # See coolify_network_pool in group_vars/all/00-defaults.yml.
+    - name: Pre-seed Coolify's .env with a non-colliding Docker network pool
+      ansible.builtin.command: >-
+        incus exec coolify --project coolify
+        -- sh -c "mkdir -p /data/coolify/source &&
+        printf 'DOCKER_ADDRESS_POOL_BASE=%s\nDOCKER_ADDRESS_POOL_SIZE=%s\n'
+        '{{ coolify_network_pool }}' '{{ coolify_network_pool_size }}'
+        > /data/coolify/source/.env"
+      when: coolify_installed.rc != 0
+
+    # Upstream's official installer. It's guarded by the /data/coolify check
+    # above rather than being made internally idempotent — re-running it is
+    # an *upgrade*, which should be a deliberate act, not a side effect of
+    # re-running this playbook.
+    - name: Run the Coolify installer
+      ansible.builtin.command: >-
+        incus exec coolify --project coolify
+        -- sh -c "curl -fsSL https://cdn.coollabs.io/coolify/install.sh -o /root/install.sh
+        && bash /root/install.sh"
+      when: coolify_installed.rc != 0
+
+    # The installer returns before the app container finishes booting; the
+    # UI 502s in that window. Poll its Docker healthcheck rather than
+    # sleeping a fixed amount.
+    - name: Wait for the Coolify container to report healthy
+      ansible.builtin.command: >-
+        incus exec coolify --project coolify
+        -- docker inspect -f "{{ '{{.State.Health.Status}}' }}" coolify
+      register: coolify_health
+      until: coolify_health.stdout == "healthy"
+      retries: 60
+      delay: 5
+      changed_when: false
+
+    # ---------------------------------------------------------------- #
+    # Sandbox servers — sshd + Docker, ready for Coolify to enroll      #
+    # ---------------------------------------------------------------- #
+
+    # Note the `sh -c`: `command` is a shell builtin, not an executable, so
+    # `incus exec ... -- command -v docker` always fails with rc=127
+    # ("Command not found") whether or not Docker is installed — which would
+    # silently make this guard useless and re-run the installs every time.
+    - name: Check whether Docker is installed on each sandbox
+      ansible.builtin.command: >-
+        incus exec {{ item }} --project coolify
+        -- sh -c "command -v docker"
+      loop: "{{ coolify_sandboxes }}"
+      register: sandbox_docker
+      changed_when: false
+      failed_when: false
+
+    # openssh-server is what makes these reachable as Coolify "servers" at
+    # all — Coolify drives them entirely over SSH, running docker commands
+    # remotely. The Debian 13 image ships without it.
+    - name: Install sshd and Docker's prerequisites on each sandbox
+      ansible.builtin.command: >-
+        incus exec {{ item.item }} --project coolify
+        -- sh -c "apt-get update -qq &&
+        apt-get install -y -qq openssh-server curl ca-certificates"
+      loop: "{{ sandbox_docker.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when: item.rc != 0
+
+    - name: Install Docker on each sandbox
+      ansible.builtin.command: >-
+        incus exec {{ item.item }} --project coolify
+        -- sh -c "curl -fsSL https://get.docker.com | sh"
+      loop: "{{ sandbox_docker.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when: item.rc != 0
+
+    # The sandbox never runs Coolify's own installer (it's a deploy target,
+    # not a control plane), so nothing writes the /etc/docker/daemon.json
+    # that the installer produces on the control plane. Left alone, Docker
+    # here falls back to its built-in defaults, which differ in two ways
+    # that both matter eventually:
+    #
+    #   * Address pool. The built-in default is 172.16.0.0/12. That happens
+    #     NOT to collide with anything on this host (no 172.x routes;
+    #     tailscale is on 100.64/10), so this isn't the same landmine as
+    #     Coolify's 10.0.0.0/8 default — but see the size problem below.
+    #   * Pool size. Docker's default carves out a /16 PER NETWORK, and
+    #     Coolify creates a network per project, so 172.16/12 is exhausted
+    #     after ~16 of them. The failure mode is an opaque "could not find
+    #     an available, non-overlapping IPv4 address pool" partway through
+    #     some future deploy. /24s give 256 instead, matching the control
+    #     plane's own layout.
+    #
+    # Log rotation is included for the same reason it's in the control
+    # plane's file: container logs on a disposable sandbox should never be
+    # allowed to grow without bound.
+    # Written via `incus exec ... sh -c "cat > ..."` rather than
+    # `incus file push`. The push form takes <remote>:<instance>/<path>, and
+    # omitting the remote is NOT an error — `coolify/coolify-sandbox/etc/...`
+    # silently parses as instance "coolify", path "/coolify-sandbox/etc/...",
+    # writing the file into the wrong container at a nonsense path and
+    # returning rc=0, so Ansible reports success. (Confirmed in practice.)
+    # The exec form has no such ambiguity: the instance is a distinct
+    # argument.
+    - name: Check each sandbox's current Docker daemon.json
+      ansible.builtin.command: >-
+        incus exec {{ item }} --project coolify
+        -- cat /etc/docker/daemon.json
+      loop: "{{ coolify_sandboxes }}"
+      register: sandbox_daemon_json
+      changed_when: false
+      failed_when: false
+
+    - name: Configure Docker's address pool and log rotation on each sandbox
+      ansible.builtin.command:
+        cmd: >-
+          incus exec {{ item.item }} --project coolify
+          -- sh -c "mkdir -p /etc/docker && cat > /etc/docker/daemon.json"
+        stdin: |
+          {
+            "log-driver": "json-file",
+            "log-opts": {
+              "max-size": "10m",
+              "max-file": "3"
+            },
+            "default-address-pools": [
+              {"base": "{{ coolify_sandbox_network_pool }}", "size": {{ coolify_network_pool_size }}}
+            ]
+          }
+      loop: "{{ sandbox_daemon_json.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when: coolify_sandbox_network_pool not in item.stdout
+      register: sandbox_daemon_written
+
+    # Only restarts when the file above actually changed. Note this drops
+    # any running containers on the sandbox briefly — acceptable here (it's
+    # a disposable evaluation target), and it doesn't happen on re-runs.
+    # `item.item.item`, not `item.item`: this loops over the results of a
+    # task that itself looped over another task's results, so the instance
+    # name is nested two levels deep. Getting this wrong stringifies a whole
+    # result dict into the command line.
+    - name: Restart Docker on each sandbox to apply daemon.json
+      ansible.builtin.command: >-
+        incus exec {{ item.item.item }} --project coolify
+        -- systemctl restart docker
+      loop: "{{ sandbox_daemon_written.results }}"
+      loop_control:
+        label: "{{ item.item.item }}"
+      when: item is changed
+
+    # Coolify authenticates as root with a key (see the handoff below), so
+    # root login must be permitted — but only by key, never by password.
+    # "prohibit-password" is the Debian default for the PermitRootLogin
+    # line, but the shipped line is commented out, so it's set explicitly.
+    - name: Check whether root SSH login is already permitted on each sandbox
+      ansible.builtin.command: >-
+        incus exec {{ item }} --project coolify
+        -- grep -qx "PermitRootLogin prohibit-password" /etc/ssh/sshd_config
+      loop: "{{ coolify_sandboxes }}"
+      register: sandbox_sshd_ok
+      changed_when: false
+      failed_when: false
+
+    # Guarded on the grep above rather than reporting `changed` off the
+    # sed's own exit code — sed succeeds whether or not it substituted
+    # anything, so keying off it would mark this changed on every run and
+    # pointlessly restart sshd each time.
+    - name: Permit key-only root SSH login on each sandbox
+      ansible.builtin.command: >-
+        incus exec {{ item.item }} --project coolify
+        -- sh -c "sed -i 's/^#*PermitRootLogin.*/PermitRootLogin prohibit-password/'
+        /etc/ssh/sshd_config && systemctl restart ssh"
+      loop: "{{ sandbox_sshd_ok.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when: item.rc != 0
+
+    # ---------------------------------------------------------------- #
+    # Key handoff — Coolify's own key into each sandbox's root account   #
+    # ---------------------------------------------------------------- #
+    #
+    # Coolify generates an ed25519 keypair for itself at install time and
+    # keeps the private half inside its own container. Rather than
+    # generating a separate key here (which would mean a private key living
+    # in this repo's variables), this reads Coolify's *public* half back out
+    # and installs it on the sandbox. The private key never moves.
+    #
+    # The effect is that the sandbox is already enrolled-ready: in the
+    # Coolify UI it's just Servers -> Add with the IP reported at the end of
+    # this playbook, and validation passes immediately.
+
+    - name: Find the name of Coolify's generated SSH key
+      ansible.builtin.command: >-
+        incus exec coolify --project coolify
+        -- sh -c "ls /data/coolify/ssh/keys/ | grep -v '\.lock$' | head -1"
+      register: coolify_key_name
+      changed_when: false
+
+    - name: Derive the public half of Coolify's SSH key
+      ansible.builtin.command: >-
+        incus exec coolify --project coolify
+        -- ssh-keygen -y -f /data/coolify/ssh/keys/{{ coolify_key_name.stdout }}
+      register: coolify_pubkey
+      changed_when: false
+
+    - name: Check whether each sandbox already trusts Coolify's key
+      ansible.builtin.command: >-
+        incus exec {{ item }} --project coolify
+        -- grep -qF "{{ coolify_pubkey.stdout }}" /root/.ssh/authorized_keys
+      loop: "{{ coolify_sandboxes }}"
+      register: sandbox_key_present
+      changed_when: false
+      failed_when: false
+
+    - name: Install Coolify's public key into each sandbox's root account
+      ansible.builtin.command: >-
+        incus exec {{ item.item }} --project coolify
+        -- sh -c "mkdir -p /root/.ssh && chmod 700 /root/.ssh &&
+        printf '%s\n' '{{ coolify_pubkey.stdout }}' >> /root/.ssh/authorized_keys &&
+        chmod 600 /root/.ssh/authorized_keys"
+      loop: "{{ sandbox_key_present.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when: item.rc != 0
+
+    # ---------------------------------------------------------------- #
+    # Report what's needed to finish enrollment in the browser           #
+    # ---------------------------------------------------------------- #
+
+    - name: Collect each sandbox's address on coolify-br0
+      ansible.builtin.command: incus list {{ item }} --project coolify -f json
+      loop: "{{ coolify_sandboxes }}"
+      register: sandbox_addresses
+      changed_when: false
+
+    - name: Show how to finish adding each sandbox as a Coolify server
+      ansible.builtin.debug:
+        msg: >-
+          Coolify UI: http://{{ ansible_host | default(inventory_hostname) }}:{{ coolify_port }}
+          — then Servers -> Add:
+          {{ item.item }} at
+          {{ (item.stdout | from_json | first).state.network.eth0.addresses
+             | selectattr('family', 'equalto', 'inet') | map(attribute='address') | first }},
+          user root, using Coolify's own pre-installed key.
+      loop: "{{ sandbox_addresses.results }}"
+      loop_control:
+        label: "{{ item.item }}"

@@ -14,6 +14,7 @@ This document describes what is configured in the homelab using Ansible.
 7. ~~Prepare naspool for S3 storage buckets~~ — done, see `src/ansible/playbooks/naspool-buckets.yml`.
 8. ~~Deploy Immich~~ — done, see `src/ansible/playbooks/immich.yml`.
 9. ~~Deploy the media stack (Jellyfin, Navidrome, Kavita)~~ — done, see `src/ansible/playbooks/media.yml`.
+10. ~~Install Coolify and prepare a sandbox server for it~~ — done, see `src/ansible/playbooks/coolify.yml`.
 
 ## Playbooks
 
@@ -145,10 +146,65 @@ Kavita refuses any library whose root contains loose files ("One or more folders
 * A BTRFS rollback snapshot was taken first at `/naspool/.snapshots/pre-livros-reorg` (same idiom as `naspool-buckets.yml`'s `pre-incus-buckets`). Restore a file from it with `cp -a /naspool/.snapshots/pre-livros-reorg/biblioteca/Livros/... `; reclaim it once confident with `sudo btrfs subvolume delete /naspool/.snapshots/pre-livros-reorg`.
 * **Foldering:** each of the 70 loose root files moved into its own folder named after the file's basename. Three basenames existed as both `.pdf` and `.zip` (e.g. `descartes_discurso_do_metodo`) and deliberately share one folder. Two macOS `.DS_Store` files were deleted. The 5 pre-existing subdirectories were left untouched. Net: 703 files, down from 705.
 * **Zip extraction:** 25 `.zip` archives were extracted in place and then removed. They split into two kinds, treated differently:
-  * **1 web book** — `livro_l'amazonie.zip` is an old scraped website (15 HTML pages + 57 images, no PDF). Extracted **in full**: the HTML and images *are* the book. ⚠️ Kavita reads EPUB/PDF/CBZ/CBR but **not raw HTML**, so this one is preserved and browsable over Samba but won't render as a book in Kavita — it would need converting to EPUB (e.g. Calibre's `ebook-convert`).
+  * **1 web book** — `livro_l'amazonie.zip` is an old scraped website (15 HTML pages + 57 images, no PDF). Extracted **in full**: the HTML and images *are* the book. Kavita reads EPUB/PDF/CBZ/CBR but **not raw HTML**, so it was additionally converted to EPUB with Calibre's `ebook-convert` (run in a throwaway Incus container with the source bind-mounted read-only, so Calibre and its Qt dependencies were never installed on the homelab host). Two quirks of this 2001-era scrape defeat a naive conversion: `index.htm` is a **frameset**, which Calibre can't follow, and `capa.htm` links its chapters only through JavaScript (`href="javascript:janela2('cap01.htm')"`), which Calibre ignores — so a plain table of contents with real `<a href>` links was generated and converted from instead, with `--input-encoding=iso-8859-1` to keep the Portuguese accents intact. Result: a 497KB EPUB, 13 chapters, 43 images, verified free of mojibake. The original HTML tree is untouched alongside it.
   * **23 document books** — a single PDF (or one CHM), extracted; the bundled `Ateus.net.url` download-site advert was skipped (20 of them). 5 PDFs already existed on disk byte-identical and were not duplicated.
   * **1 corrupt archive** — `Awk Languaje Programming- Enero 1996.zip` was 0 bytes and not a zip at all (verified 0 bytes in the snapshot too, so empty since 2006). Deleted along with its then-empty folder.
 * Net effect: 90 files extracted, all 25 zips removed, 17 genuinely new PDFs (Camus, Kant, Dante, Foucault, Sade…) now visible to Kavita that were previously locked inside archives. Verified after the fact: 0 files at the root, 0 zips remaining, 69 subdirectories, **106 PDFs (up from 89)**, 767 files total, and L'Amazonie's 15 HTML pages intact.
+
+* `src/ansible/playbooks/coolify.yml` — installs [Coolify](https://coolify.io) (a self-hosted PaaS) into the `coolify` instance and prepares `coolify-sandbox` to act as a Coolify "remote server". Both instances are created by `src/opentofu/coolify.tf`. Targets `[myhosts]` over SSH rather than `incus exec`, for the same reason as `immich.yml`/`media.yml`: the tasks drive the `incus` CLI itself, and at first run the instances aren't guaranteed to exist.
+
+  **What it's for.** Coolify's service catalogue is far larger than what this repo models by hand, so it's used as an **evaluation scratchpad**: try an app in a couple of clicks, and if it earns a permanent place, provision it properly with OpenTofu + Ansible. Nothing is meant to live here long-term, which is why the sandbox has no access to `/naspool` or any host path (enforced by the project's restrictions — see `references/OPENTOFU.md`).
+
+  This is the only playbook here that installs Docker and runs an upstream install script inside a container. That's inherent to Coolify: its control plane *is* a Docker Compose stack, and the apps it deploys are Docker containers. Structure:
+  * **Control plane** — installs curl/ca-certificates, pre-seeds `.env`, runs upstream's installer, then polls the `coolify` container's own Docker healthcheck rather than sleeping a fixed interval. Guarded on `/data/coolify` existing so it runs exactly once; re-running the installer is an *upgrade*, which should be deliberate rather than a side effect of re-running the playbook.
+  * **Sandbox** — installs `openssh-server` (the Debian 13 image has none) and Docker, then sets `PermitRootLogin prohibit-password`. Coolify drives its servers entirely over SSH as root, running `docker` commands remotely.
+  * **Key handoff** — reads the **public** half of the keypair Coolify generated for itself at install time out of its container, and installs it in the sandbox's `/root/.ssh/authorized_keys`. The private half never leaves Coolify's container and no private key enters this repo. The effect is that enrollment in the UI is just *Servers → Add* with the IP the playbook prints at the end.
+
+  **⚠️ The Docker network pool must be overridden, and it's set *before* the installer first runs.** Coolify defaults `DOCKER_ADDRESS_POOL_BASE` to `10.0.0.0/8`, which contains **every** Incus bridge on this host — `immich-br0` (10.10.10), `media-br0` (10.10.20), `coolify-br0` (10.10.30) and `incusbr0` (10.183.191). Docker only carves out a `/24` at a time as apps are created, so a collision wouldn't appear at install: it would surface much later as one of those bridges mysteriously breaking, with nothing obviously connecting it to Coolify. `coolify_network_pool` pins it to `10.99.0.0/16` instead, written into `/data/coolify/source/.env` before first boot so no `10.0.0.0/8` network is ever created. Verified after deploy: Coolify's networks sit on `10.99.0.0/24` and `10.99.1.0/24`.
+
+  **The sandbox needs its own `daemon.json`, for a different reason than the control plane.** The sandbox never runs Coolify's installer (it's a deploy target, not a control plane), so nothing writes one for it and Docker falls back to its built-in default of `172.16.0.0/12`. That doesn't collide with anything here — but Docker's default carves out a **`/16` per network**, and Coolify creates one per project, so the range is exhausted after ~16 projects with an opaque "no available, non-overlapping IPv4 address pool" error mid-deploy. `coolify_sandbox_network_pool` pins it to `10.98.0.0/16` with `/24` sizing (256 networks), deliberately a *different* `/16` from the control plane's `10.99.0.0/16` — the two daemons allocate independently with no knowledge of each other, so a shared range would eventually have both pick the same subnet. Note that changing this only affects **newly created** networks; pre-existing ones keep their original subnet until recreated.
+
+  **⚠️ `incus file push` silently writes to the wrong container if you omit the remote.** The target is `<remote>:<instance>/<path>`, and leaving the remote off is *not* an error — `incus file push f coolify/coolify-sandbox/etc/docker/daemon.json` parses as instance `coolify`, path `/coolify-sandbox/etc/docker/daemon.json`, dropping the file into the **control plane** at a nonsense path and returning **rc=0**, so Ansible reports success while the intended container is untouched. Confirmed in practice here. This playbook writes files with `incus exec <inst> -- sh -c "cat > <path>"` and the task's `stdin:` instead, where the instance is an unambiguous separate argument.
+
+  **Two `incus exec` guard gotchas**, both found by the playbook failing its own idempotency check (`changed=3` on a second run):
+  * `incus exec <inst> -- command -v docker` **always** fails with rc=127. `command` is a shell builtin, not an executable, and `incus exec` runs the binary directly with no shell. The guard silently never matched, so Docker was reinstalled on every run. Needs `-- sh -c "command -v docker"`. `test` and `grep` are real binaries in `/usr/bin`, so the other guards are fine as-is.
+  * `changed_when: <reg>.rc == 0` on the `sed`-based sshd task marked it changed on every run — `sed -i` succeeds whether or not it substituted anything. Replaced with a preceding `grep -qx` check that the desired line is already present.
+
+  Run with: `ansible-playbook -i src/ansible/hosts src/ansible/playbooks/coolify.yml` (no `-K`: every task runs inside a container via `incus exec`, and nothing needs root on the host).
+
+### Verifying Coolify
+
+Feasibility was established empirically before any of this was written, in throwaway Incus containers that were then deleted:
+
+| Check | Result |
+|---|---|
+| Docker nested in an unprivileged Incus container | Works — Docker **29.6.2** |
+| Docker storage driver | **overlayfs** — *not* the vfs/btrfs fallbacks the usual "don't run Docker in LXC" warnings concern |
+| Multi-service compose stack (nginx + postgres) | Up, including port publishing and Postgres initdb |
+| Coolify installer | **4.1.2**, all containers healthy |
+| Coolify → sandbox SSH **from inside the `coolify` app container** | Succeeded; remote Docker reported `29.6.2`/`overlayfs` |
+
+That last row is the decisive one — it's the exact code path Coolify's own server validation uses.
+
+After deploying, check:
+
+```bash
+incus list --project coolify -f compact                      # both RUNNING on 10.10.30.0/24
+incus exec coolify --project coolify -- docker ps            # 6 containers, all healthy
+incus exec coolify --project coolify -- docker network inspect bridge \
+  --format '{{range .IPAM.Config}}{{.Subnet}}{{end}}'        # must be 10.99.x, never 10.10.x/10.183.x
+```
+
+The web UI is at `http://<homelab-ip>:8000` (HTTP 200, title "Coolify"). First visit creates the admin account. Then **Servers → Add** using the sandbox IP the playbook printed, user `root`, with Coolify's own pre-installed key — validation should pass immediately.
+
+Confirm the isolation guarantee still holds — Incus should *refuse* this:
+
+```bash
+incus config device add coolify-sandbox evil disk source=/naspool path=/naspool --project coolify
+# Error: ... Attaching disks not backed by a pool is forbidden
+```
+
+**Teardown**, since disposability is the point: `incus delete --force coolify coolify-sandbox --project coolify`, or `tofu destroy` targeting the two instances. Nothing is written outside the containers — verified that the host keeps no Docker and no `/data`.
 
 ### Renewing the headplane API key
 
