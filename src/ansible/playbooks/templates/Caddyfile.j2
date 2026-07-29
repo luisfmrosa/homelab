@@ -1,6 +1,6 @@
-# Managed by Ansible (src/ansible/playbooks/headscale.yml and
-# src/ansible/playbooks/headplane.yml). Manual edits will be overwritten on
-# the next playbook run.
+# Managed by Ansible (src/ansible/playbooks/headscale.yml,
+# src/ansible/playbooks/headplane.yml and src/ansible/playbooks/dashboard.yml).
+# Manual edits will be overwritten on the next playbook run.
 #
 # Caddy terminates TLS for {{ headscale_domain }}, obtaining and renewing
 # its Let's Encrypt certificate automatically (ACME HTTP-01 challenge on
@@ -17,4 +17,34 @@
     handle {
         reverse_proxy 127.0.0.1:8080
     }
+}
+
+# --- services dashboard (dashboard.yml) ---
+#
+# The generated "what's running here" page, served straight off the read-only
+# bind mount declared in headscale.tf. Rendered on the host from the port
+# variables in group_vars/all/00-defaults.yml — never edited in place.
+#
+# A SEPARATE LISTENER, deliberately, rather than a `handle /services*` under
+# the site block above. That block is {{ headscale_domain }}: forwarded by the
+# router, reachable from the open internet, holding a real Let's Encrypt cert.
+# This page is a complete map of every internal service and port on this
+# homelab — reconnaissance, if not a credential — and serving it there would
+# leave one typo between that map and the public internet.
+#
+# Bound bare (no hostname) so Caddy serves plain HTTP with no certificate and
+# no ACME attempt for it. Reached only via the proxy device in headscale.tf,
+# which listens on the homelab host's own address: LAN and tailnet, exactly
+# like Immich, Jellyfin, Kavita, Navidrome and Coolify, and nothing the router
+# forwards.
+#
+# Note this is {{ dashboard_internal_port }}, not {{ dashboard_port }}: 8080
+# in this container is headscale's own API listener, proxied to by the block
+# above. The host-side port is {{ dashboard_port }}.
+:{{ dashboard_internal_port }} {
+    root * /var/www/dashboard
+    # Plain `file_server`, deliberately without `browse`: directory listings
+    # stay off, so if the docroot ever grows beyond the single index.html it
+    # holds today, its contents don't silently become enumerable.
+    file_server
 }

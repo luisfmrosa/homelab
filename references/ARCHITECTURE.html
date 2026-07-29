@@ -1,6 +1,6 @@
 <!doctype html>
 <title>Homelab Architecture</title>
-<meta name="description" content="Network topology and architecture diagram for the homelab: laptop/WSL control plane, router/internet, and Incus containers on the homelab NUC.">
+<meta name="description" content="Network topology and architecture diagram for the homelab: laptop/WSL control plane, router/internet, and the four Incus projects on the homelab NUC.">
 <style>
 @font-face {
   font-family: 'Caveat';
@@ -31,8 +31,14 @@
   --teal-bg: #e2f6f5;
   --orange: #e8590c;
   --orange-bg: #fff1e6;
+  --rose: #a61e4d;
+  --rose-bg: #fff0f4;
+  --amber: #a16207;
+  --amber-bg: #fdf4e3;
   --red: #c92a2a;
   --red-bg: #fff0f0;
+  --green: #2b8a3e;
+  --green-bg: #e9f7ec;
 
   --shadow: rgba(30, 26, 20, 0.08);
 }
@@ -54,8 +60,14 @@
     --teal-bg: #123638;
     --orange: #ffa94d;
     --orange-bg: #3d2412;
+    --rose: #f783ac;
+    --rose-bg: #3d1a28;
+    --amber: #ffd43b;
+    --amber-bg: #3a2f11;
     --red: #ff8787;
     --red-bg: #3d1a1a;
+    --green: #8ce99a;
+    --green-bg: #16351e;
 
     --shadow: rgba(0, 0, 0, 0.35);
   }
@@ -77,8 +89,14 @@
   --teal-bg: #123638;
   --orange: #ffa94d;
   --orange-bg: #3d2412;
+  --rose: #f783ac;
+  --rose-bg: #3d1a28;
+  --amber: #ffd43b;
+  --amber-bg: #3a2f11;
   --red: #ff8787;
   --red-bg: #3d1a1a;
+  --green: #8ce99a;
+  --green-bg: #16351e;
 
   --shadow: rgba(0, 0, 0, 0.35);
 }
@@ -99,8 +117,14 @@
   --teal-bg: #e2f6f5;
   --orange: #e8590c;
   --orange-bg: #fff1e6;
+  --rose: #a61e4d;
+  --rose-bg: #fff0f4;
+  --amber: #a16207;
+  --amber-bg: #fdf4e3;
   --red: #c92a2a;
   --red-bg: #fff0f0;
+  --green: #2b8a3e;
+  --green-bg: #e9f7ec;
 
   --shadow: rgba(30, 26, 20, 0.08);
 }
@@ -139,7 +163,7 @@ h1 {
   font-size: 0.85rem;
   color: var(--ink-soft);
   letter-spacing: 0.02em;
-  max-width: 65ch;
+  max-width: 68ch;
   line-height: 1.6;
 }
 
@@ -210,8 +234,8 @@ svg { display: block; }
 
 .callout {
   margin-top: 1.75rem;
-  border-left: 3px solid var(--red);
-  background: var(--red-bg);
+  border-left: 3px solid var(--amber);
+  background: var(--amber-bg);
   border-radius: 0 8px 8px 0;
   padding: 0.9rem 1.1rem;
   font-size: 0.82rem;
@@ -219,7 +243,10 @@ svg { display: block; }
   color: var(--ink);
   max-width: 78ch;
 }
-.callout b { color: var(--red); }
+.callout b { color: var(--amber); }
+.callout + .callout { margin-top: 0.9rem; }
+.callout.is-red { border-left-color: var(--red); background: var(--red-bg); }
+.callout.is-red b { color: var(--red); }
 
 .notes {
   margin-top: 1.5rem;
@@ -252,26 +279,39 @@ svg { display: block; }
   padding: 0.05em 0.35em;
   font-size: 0.92em;
 }
+
+.footnote {
+  margin-top: 2rem;
+  padding-top: 1rem;
+  border-top: 1.5px solid var(--line);
+  font-size: 0.75rem;
+  color: var(--ink-faint);
+  line-height: 1.6;
+}
 </style>
 <body>
 <div class="page">
   <header>
     <h1>The homelab, wired up</h1>
     <div class="subtitle">
-      Current topology as of tonight's session: a NUC running Incus, one working tailnet
-      controller behind Caddy, and the two machines (Windows laptop + its WSL sidecar) that
-      manage it all remotely.
+      A single Debian 13 NUC running Incus 7.2, carved into four projects — the shared
+      <code>default</code> one, plus three isolated ones for Immich, the media stack and Coolify.
+      Managed remotely from a Windows laptop and its WSL sidecar, and reachable from anywhere
+      through a self-hosted headscale tailnet.
     </div>
     <div class="legend">
       <div class="legend-item"><span class="swatch" style="color:var(--violet); background:var(--violet-bg)"></span>control plane (laptop / WSL)</div>
       <div class="legend-item"><span class="swatch" style="color:var(--blue); background:var(--blue-bg)"></span>router / network edge</div>
-      <div class="legend-item"><span class="swatch" style="color:var(--teal); background:var(--teal-bg)"></span>homelab + Incus</div>
+      <div class="legend-item"><span class="swatch" style="color:var(--teal); background:var(--teal-bg)"></span>default project + host</div>
+      <div class="legend-item"><span class="swatch" style="color:var(--green); background:var(--green-bg)"></span>immich project</div>
+      <div class="legend-item"><span class="swatch" style="color:var(--rose); background:var(--rose-bg)"></span>media project</div>
+      <div class="legend-item"><span class="swatch" style="color:var(--amber); background:var(--amber-bg)"></span>coolify project (weaker isolation)</div>
       <div class="legend-item"><span class="swatch" style="color:var(--orange); background:var(--orange-bg)"></span>public internet</div>
     </div>
   </header>
 
   <div class="diagram-wrap">
-<svg viewBox="0 0 1180 1180" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Network topology diagram of the homelab architecture">
+<svg viewBox="0 0 1180 1990" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Network topology diagram of the homelab architecture, showing the laptop control plane, the router and internet edge, and the four Incus projects on the homelab NUC">
   <defs>
     <filter id="roughen" x="-10%" y="-10%" width="120%" height="120%">
       <feTurbulence type="fractalNoise" baseFrequency="0.012 0.035" numOctaves="2" seed="7" result="noise"/>
@@ -293,25 +333,30 @@ svg { display: block; }
   <!-- Windows host box -->
   <rect x="46" y="76" width="330" height="142" rx="10" class="sketch-box" stroke="var(--violet)"/>
   <text x="66" y="106" class="node-label" font-size="24">Windows</text>
-  <text x="66" y="128" class="node-sub" font-size="12">incus CLI · incus-compose</text>
-  <text x="66" y="146" class="node-sub" font-size="12">OpenTofu (lxc/incus provider)</text>
+  <text x="66" y="128" class="node-sub" font-size="12">incus CLI · OpenTofu</text>
+  <text x="66" y="146" class="node-sub" font-size="12">lxc/incus provider</text>
   <text x="66" y="164" class="node-sub" font-size="12">%APPDATA%\incus\ (trust store)</text>
   <text x="66" y="188" class="node-sub" font-size="12" fill="var(--violet)">remote: homelab → :8443</text>
 
   <!-- WSL box -->
   <rect x="410" y="76" width="330" height="142" rx="10" class="sketch-box" stroke="var(--violet)"/>
   <text x="430" y="106" class="node-label" font-size="24">WSL · Ubuntu</text>
-  <text x="430" y="128" class="node-sub" font-size="12">ansible-playbook</text>
+  <text x="430" y="128" class="node-sub" font-size="12">ansible-playbook (9 playbooks)</text>
   <text x="430" y="146" class="node-sub" font-size="12">its own incus CLI + trust</text>
-  <text x="430" y="164" class="node-sub" font-size="12">connects: SSH → homelab/naspool</text>
-  <text x="430" y="188" class="node-sub" font-size="12" fill="var(--violet)">connects: incus exec → headscale</text>
+  <text x="430" y="164" class="node-sub" font-size="12">SSH → homelab host [myhosts]</text>
+  <text x="430" y="188" class="node-sub" font-size="12" fill="var(--violet)">incus exec → headscale, naspool-samba</text>
+
+  <!-- Tailscale client on laptop -->
+  <rect x="774" y="76" width="340" height="142" rx="10" class="sketch-box" stroke="var(--violet)"/>
+  <text x="794" y="106" class="node-label" font-size="24">Tailscale client</text>
+  <text x="794" y="128" class="node-sub" font-size="12">lfmr-hp-w11</text>
+  <text x="794" y="150" class="node-sub" font-size="12" fill="var(--violet)">100.64.0.1</text>
+  <text x="794" y="172" class="node-sub" font-size="12">registered against our own</text>
+  <text x="794" y="190" class="node-sub" font-size="12">headscale, not Tailscale SaaS</text>
 
   <!-- laptop internal arrow -->
   <path d="M376,140 Q393,140 410,140" class="flow-arrow" marker-end="url(#arrow)"/>
   <text x="378" y="130" class="flow-label" font-size="11">shares</text>
-
-  <!-- WSL -> homelab https api -->
-  <path d="M575,218 Q575,270 300,300" class="flow-arrow" marker-end="url(#arrow)"/>
 
   <!-- ============ ZONE 2: ROUTER / INTERNET ============ -->
   <text x="30" y="290" class="zone-label" font-size="22">router — SFR GR140CG</text>
@@ -320,131 +365,235 @@ svg { display: block; }
   <rect x="46" y="330" width="360" height="150" rx="10" class="sketch-box" stroke="var(--blue)"/>
   <text x="66" y="360" class="node-label" font-size="24">Router / LAN</text>
   <text x="66" y="384" class="node-sub" font-size="12">brlan0 · SSH trust already set up</text>
-  <text x="66" y="402" class="node-sub" font-size="12">static IPv4: <homelab-ip> → homelab</text>
-  <text x="66" y="420" class="node-sub" font-size="12">static IPv6: …45f9:c999:614a:200</text>
+  <text x="66" y="402" class="node-sub" font-size="12">static IPv4 → homelab host</text>
+  <text x="66" y="420" class="node-sub" font-size="12">static IPv6 → same host</text>
   <text x="66" y="444" class="node-sub" font-size="12" fill="var(--blue)">fwd 443/80 tcp · 3478 udp → homelab</text>
-  <text x="66" y="463" class="node-sub" font-size="11" fill="var(--ink-faint)">(old rules → dead macvlan IP, left off)</text>
+  <text x="66" y="463" class="node-sub" font-size="11" fill="var(--ink-faint)">every LAN service below is host-side, no fwd</text>
 
   <!-- Internet box -->
   <rect x="460" y="330" width="270" height="150" rx="10" class="sketch-box" stroke="var(--orange)"/>
   <text x="480" y="360" class="node-label" font-size="24">Internet</text>
   <text x="480" y="384" class="node-sub" font-size="12">DuckDNS: dynamic-dns-name</text>
   <text x="480" y="402" class="node-sub" font-size="12">.duckdns.org</text>
-  <text x="480" y="424" class="node-sub" font-size="12" fill="var(--orange)">AAAA → 614a:200</text>
+  <text x="480" y="424" class="node-sub" font-size="12" fill="var(--orange)">AAAA → homelab IPv6</text>
   <text x="480" y="452" class="node-sub" font-size="12">Let's Encrypt (ACME)</text>
 
   <!-- Tailnet client cloud -->
   <rect x="774" y="330" width="386" height="150" rx="10" class="sketch-box" stroke="var(--orange)"/>
   <text x="794" y="360" class="node-label" font-size="24">Tailnet clients</text>
-  <text x="794" y="384" class="node-sub" font-size="12">any device running the</text>
-  <text x="794" y="402" class="node-sub" font-size="12">Tailscale client, pointed at</text>
-  <text x="794" y="424" class="node-sub" font-size="12" fill="var(--orange)"><headscale-domain></text>
-  <text x="794" y="452" class="node-sub" font-size="12">relayed via embedded DERP</text>
+  <text x="794" y="384" class="node-sub" font-size="12">laptop · phone · homelab itself</text>
+  <text x="794" y="404" class="node-sub" font-size="12" fill="var(--orange)"><headscale-domain></text>
+  <text x="794" y="426" class="node-sub" font-size="12">embedded DERP + public DERP</text>
+  <text x="794" y="444" class="node-sub" font-size="12">fallback (fixed Samba on mobile)</text>
+  <text x="794" y="466" class="node-sub" font-size="11" fill="var(--ink-faint)">100.64.0.0/10</text>
 
   <!-- internet <-> router arrows -->
   <path d="M406,405 Q433,405 460,405" class="flow-arrow" marker-end="url(#arrow)"/>
   <path d="M730,405 Q752,405 774,405" class="flow-arrow" marker-end="url(#arrow)"/>
-  <text x="1000" y="510" class="flow-label" font-size="12" text-anchor="middle">443 · 80 tcp / 3478 udp</text>
-  <path d="M960,485 Q900,530 620,540" class="flow-arrow" marker-end="url(#arrow)"/>
+  <text x="1000" y="512" class="flow-label" font-size="12" text-anchor="middle">443 · 80 tcp / 3478 udp</text>
+  <path d="M960,485 Q900,530 620,548" class="flow-arrow" marker-end="url(#arrow)"/>
 
-  <!-- WSL/laptop -> router (https api + ssh) -->
+  <!-- laptop -> router (https api + ssh) -->
   <path d="M226,218 Q226,270 226,330" class="flow-arrow" marker-end="url(#arrow)"/>
   <text x="234" y="280" class="flow-label" font-size="11">SSH + :8443 API</text>
 
   <!-- ============ ZONE 3: HOMELAB / INCUS ============ -->
-  <text x="30" y="545" class="zone-label" font-size="22">homelab NUC — Debian 13, Incus daemon</text>
-  <rect x="20" y="560" width="1140" height="600" rx="14" fill="var(--teal-bg)" stroke="var(--teal)" stroke-width="1.4" stroke-dasharray="2 7" opacity="0.5"/>
+  <text x="30" y="553" class="zone-label" font-size="22">homelab NUC — Debian 13, kernel 6.12.95, Incus 7.2</text>
+  <rect x="20" y="568" width="1140" height="1400" rx="14" fill="var(--teal-bg)" stroke="var(--teal)" stroke-width="1.4" stroke-dasharray="2 7" opacity="0.5"/>
 
-  <!-- host box outer -->
-  <rect x="46" y="586" width="1088" height="320" rx="10" class="sketch-box" stroke="var(--teal)"/>
-  <text x="70" y="618" class="node-label" font-size="24">wlo1 — WiFi, <homelab-ip></text>
-  <text x="70" y="640" class="node-sub" font-size="12" fill="var(--red)">macvlan NIC over WiFi tried &amp; abandoned — APs drop frames for a 2nd MAC</text>
+  <!-- HOST STRIP -->
+  <rect x="46" y="592" width="1088" height="196" rx="10" class="sketch-box" stroke="var(--teal)"/>
+  <text x="70" y="622" class="node-label" font-size="24">the host itself — wlo1, WiFi, static LAN IP</text>
+  <text x="70" y="648" class="node-sub" font-size="12">Incus HTTPS API + web UI — <tspan fill="var(--teal)">0.0.0.0:8443</tspan>, trust-token auth for the laptop &amp; WSL remotes</text>
+  <text x="70" y="668" class="node-sub" font-size="12">Incus storage-buckets S3 API — <tspan fill="var(--teal)">0.0.0.0:8555</tspan>, self-signed cert (SANs: homelab, 127.0.0.1, ::1)</text>
+  <text x="70" y="688" class="node-sub" font-size="12">Tailscale client — <tspan fill="var(--teal)">100.64.0.3</tspan>, joins the host to its own tailnet so :8443 works off-LAN with no router change</text>
+  <text x="70" y="712" class="node-sub" font-size="12">/naspool — BTRFS RAID1 over 2 disks, mounted by naspool.yml; the data every stack below actually cares about</text>
+  <text x="70" y="732" class="node-sub" font-size="12">storage pools — <tspan fill="var(--ink)">default</tspan> (btrfs, /var/lib/incus-pool) · <tspan fill="var(--ink)">naspool-buckets</tspan> (btrfs, /naspool/incus-buckets subvol)</text>
+  <text x="70" y="752" class="node-sub" font-size="12">OCI remotes — docker.io · ghcr.io · registry.gitlab.com</text>
+  <text x="70" y="774" class="node-sub" font-size="11" fill="var(--ink-faint)">no Docker on the host — the only Docker daemons live inside the two coolify containers</text>
 
-  <!-- incusbr0 bridge -->
-  <rect x="90" y="662" width="1000" height="70" rx="8" fill="var(--paper)" stroke="var(--ink-soft)" stroke-width="1.3" stroke-dasharray="5 4"/>
-  <text x="110" y="688" class="node-sub" font-size="13" fill="var(--ink)">incusbr0 — managed NAT bridge (created manually; incus.yml preseed now idempotent for it)</text>
-  <text x="110" y="708" class="node-sub" font-size="12">10.183.191.0/24 · fd42:89a4:ad91:2287::/64 (NAT'd both)</text>
+  <!-- ============ PROJECT: default ============ -->
+  <text x="46" y="822" class="zone-label" font-size="19" fill="var(--teal)">project: default — incusbr0 · 10.183.191.0/24 + fd42:…:2287::/64, NAT'd</text>
+  <rect x="46" y="834" width="1088" height="212" rx="10" fill="var(--paper)" stroke="var(--teal)" stroke-width="1.4"/>
 
   <!-- headscale container -->
-  <rect x="110" y="750" width="460" height="140" rx="10" class="sketch-box" stroke="var(--teal)"/>
-  <text x="130" y="780" class="node-label" font-size="24">headscale</text>
-  <text x="500" y="775" class="node-sub" font-size="11" text-anchor="end" fill="var(--ink-faint)">LXC container</text>
-  <text x="130" y="800" class="node-sub" font-size="12">10.183.191.183 · no SSH, no cloud-init</text>
-  <text x="130" y="818" class="node-sub" font-size="12">ansible via incus exec (community.general.incus)</text>
-  <text x="130" y="840" class="node-sub" font-size="12" fill="var(--teal)">Caddy :443/:80 → reverse_proxy</text>
-  <text x="130" y="858" class="node-sub" font-size="12" fill="var(--teal)">headscale :8080 · embedded DERP :3478</text>
-  <text x="130" y="876" class="node-sub" font-size="11" fill="var(--ink-faint)">v0.23.0 pinned .deb from GitHub release</text>
+  <rect x="70" y="858" width="516" height="164" rx="10" class="sketch-box" stroke="var(--teal)"/>
+  <text x="90" y="888" class="node-label" font-size="23">headscale</text>
+  <text x="566" y="882" class="node-sub" font-size="11" text-anchor="end" fill="var(--ink-faint)">LXC · system container</text>
+  <text x="90" y="908" class="node-sub" font-size="12">10.183.191.183 · no SSH, no cloud-init</text>
+  <text x="90" y="926" class="node-sub" font-size="12">ansible via incus exec (community.general.incus)</text>
+  <text x="90" y="948" class="node-sub" font-size="12" fill="var(--teal)">Caddy :443 / :80 — Let's Encrypt, reverse_proxy</text>
+  <text x="90" y="966" class="node-sub" font-size="12" fill="var(--teal)">headscale v0.29.2 :8080 · embedded DERP :3478/udp</text>
+  <text x="90" y="984" class="node-sub" font-size="12" fill="var(--teal)">headplane :3000 → /admin (built from source)</text>
+  <text x="90" y="1006" class="node-sub" font-size="11" fill="var(--ink-faint)">proxy: 443, 80 tcp · 3478 udp → 127.0.0.1</text>
 
-  <!-- naspool container (dashed / off) -->
-  <rect x="610" y="750" width="480" height="140" rx="10" fill="var(--paper)" stroke="var(--ink-faint)" stroke-width="1.4" stroke-dasharray="6 5"/>
-  <text x="630" y="780" class="node-label" font-size="24" fill="var(--ink-faint)">naspool</text>
-  <text x="990" y="775" class="node-sub" font-size="11" text-anchor="end" fill="var(--ink-faint)">destroyed — .tf.LATER</text>
-  <text x="630" y="802" class="node-sub" font-size="12" fill="var(--ink-faint)">Debian 12 + cloud-init, SSH-reachable</text>
-  <text x="630" y="820" class="node-sub" font-size="12" fill="var(--ink-faint)">bind-mounts host's /naspool (BTRFS RAID1)</text>
-  <text x="630" y="842" class="node-sub" font-size="12" fill="var(--ink-faint)">to be re-applied when needed again</text>
+  <!-- naspool-samba container -->
+  <rect x="610" y="858" width="500" height="164" rx="10" class="sketch-box" stroke="var(--teal)"/>
+  <text x="630" y="888" class="node-label" font-size="23">naspool-samba</text>
+  <text x="1090" y="882" class="node-sub" font-size="11" text-anchor="end" fill="var(--ink-faint)">LXC · system container</text>
+  <text x="630" y="908" class="node-sub" font-size="12">10.183.191.252 · incus exec, no SSH</text>
+  <text x="630" y="930" class="node-sub" font-size="12">disk: /naspool → /naspool (bind mount, rw)</text>
+  <text x="630" y="952" class="node-sub" font-size="12" fill="var(--teal)">Samba — proxy 445/tcp, LAN + tailnet</text>
+  <text x="630" y="970" class="node-sub" font-size="12">one rw share, one Linux user per samba_users</text>
+  <text x="630" y="994" class="node-sub" font-size="11" fill="var(--ink-faint)">NFS dropped — kernel nfsd can't mount /proc/fs/nfsd</text>
+  <text x="630" y="1012" class="node-sub" font-size="11" fill="var(--ink-faint)">in an unprivileged container</text>
 
-  <!-- proxy device annotations -->
-  <path d="M226,662 Q226,720 190,750" class="flow-arrow" stroke-dasharray="3 3"/>
-  <path d="M580,540 Q400,600 340,662" class="flow-arrow" marker-end="url(#arrow)"/>
-  <text x="330" y="620" class="flow-label" font-size="11" text-anchor="middle">3 incus "proxy" devices</text>
-  <text x="330" y="636" class="flow-label" font-size="11" text-anchor="middle">host 0.0.0.0:{443,80,3478} → ctr 127.0.0.1</text>
+  <!-- ============ PROJECT: immich ============ -->
+  <text x="46" y="1082" class="zone-label" font-size="19" fill="var(--green)">project: immich — restricted · immich-br0 · 10.10.10.0/24</text>
+  <rect x="46" y="1094" width="1088" height="186" rx="10" fill="var(--green-bg)" stroke="var(--green)" stroke-width="1.4"/>
 
-  <!-- storage & host services strip -->
-  <rect x="90" y="924" width="1000" height="180" rx="8" fill="var(--paper)" stroke="var(--ink-soft)" stroke-width="1.3"/>
-  <text x="110" y="952" class="node-sub" font-size="13" fill="var(--ink)">host-level Incus config</text>
-  <text x="110" y="978" class="node-sub" font-size="12">storage pool "default" — btrfs subvolume /var/lib/incus-pool</text>
-  <text x="110" y="998" class="node-sub" font-size="12">HTTPS API — 0.0.0.0:8443, trust-token auth for laptop + WSL remotes</text>
-  <text x="110" y="1018" class="node-sub" font-size="12">OCI remotes (luis's client): docker.io · ghcr.io · registry.gitlab.com</text>
-  <text x="110" y="1038" class="node-sub" font-size="12">default profile eth0 device → incusbr0 (fixed: was missing, one-shot preseed guard bug)</text>
-  <text x="110" y="1064" class="node-sub" font-size="12">/naspool — BTRFS RAID1, 2 disks, mounted via naspool.yml (independent of the container)</text>
-  <text x="110" y="1084" class="node-sub" font-size="11" fill="var(--ink-faint)">incus.yml · naspool.yml — Ansible over SSH, become: true</text>
+  <rect x="70" y="1118" width="248" height="104" rx="9" class="sketch-box" stroke="var(--green)"/>
+  <text x="86" y="1146" class="node-label" font-size="20">immich-server</text>
+  <text x="86" y="1166" class="node-sub" font-size="11">10.10.10.102</text>
+  <text x="86" y="1186" class="node-sub" font-size="11" fill="var(--green)">proxy 2283/tcp → LAN</text>
+  <text x="86" y="1206" class="node-sub" font-size="11">/naspool/immich/upload</text>
 
-  <path d="M226,730 Q226,880 226,924" class="flow-arrow" opacity="0.4"/>
+  <rect x="334" y="1118" width="248" height="104" rx="9" class="sketch-box" stroke="var(--green)"/>
+  <text x="350" y="1146" class="node-label" font-size="20">immich-db</text>
+  <text x="350" y="1166" class="node-sub" font-size="11">10.10.10.59 · postgres</text>
+  <text x="350" y="1186" class="node-sub" font-size="11">VectorChord + pgvector</text>
+  <text x="350" y="1206" class="node-sub" font-size="11">/naspool/immich/postgres</text>
+
+  <rect x="598" y="1118" width="248" height="104" rx="9" class="sketch-box" stroke="var(--green)"/>
+  <text x="614" y="1146" class="node-label" font-size="20">immich-ml</text>
+  <text x="614" y="1166" class="node-sub" font-size="11">10.10.10.89</text>
+  <text x="614" y="1186" class="node-sub" font-size="11">machine learning</text>
+  <text x="614" y="1206" class="node-sub" font-size="11">/naspool/immich/model-cache</text>
+
+  <rect x="862" y="1118" width="248" height="104" rx="9" class="sketch-box" stroke="var(--green)"/>
+  <text x="878" y="1146" class="node-label" font-size="20">immich-redis</text>
+  <text x="878" y="1166" class="node-sub" font-size="11">10.10.10.41 · valkey</text>
+  <text x="878" y="1186" class="node-sub" font-size="11">job queue / cache</text>
+  <text x="878" y="1206" class="node-sub" font-size="11" fill="var(--ink-faint)">no host storage</text>
+
+  <text x="70" y="1252" class="node-sub" font-size="11" fill="var(--ink-faint)">4 OCI application containers, created by immich.yml via incus init/device add/start — not incus_instance resources (provider bug #348, OCI image resolution)</text>
+  <text x="70" y="1270" class="node-sub" font-size="11" fill="var(--ink-faint)">bind mounts pre-chowned to idmap base 1000000 + the in-container uid — shift=true and raw.idmap are both blocked by the project's restricted.devices.disk.paths scoping</text>
+
+  <!-- ============ PROJECT: media ============ -->
+  <text x="46" y="1316" class="zone-label" font-size="19" fill="var(--rose)">project: media — restricted · media-br0 · 10.10.20.0/24</text>
+  <rect x="46" y="1328" width="1088" height="192" rx="10" fill="var(--rose-bg)" stroke="var(--rose)" stroke-width="1.4"/>
+
+  <rect x="70" y="1352" width="336" height="118" rx="9" class="sketch-box" stroke="var(--rose)"/>
+  <text x="86" y="1380" class="node-label" font-size="20">jellyfin</text>
+  <text x="86" y="1400" class="node-sub" font-size="11">10.10.20.186</text>
+  <text x="86" y="1420" class="node-sub" font-size="11" fill="var(--rose)">proxy 8096/tcp → LAN</text>
+  <text x="86" y="1440" class="node-sub" font-size="11">gpu device — Intel UHD 605 QuickSync</text>
+  <text x="86" y="1458" class="node-sub" font-size="11">ro: Filmes, Videos</text>
+
+  <rect x="422" y="1352" width="336" height="118" rx="9" class="sketch-box" stroke="var(--rose)"/>
+  <text x="438" y="1380" class="node-label" font-size="20">navidrome</text>
+  <text x="438" y="1400" class="node-sub" font-size="11">10.10.20.202</text>
+  <text x="438" y="1420" class="node-sub" font-size="11" fill="var(--rose)">proxy 4533/tcp → LAN</text>
+  <text x="438" y="1440" class="node-sub" font-size="11">ro: Musicas, Biblioteca iTunes</text>
+  <text x="438" y="1458" class="node-sub" font-size="11">rw: /naspool/media/navidrome</text>
+
+  <rect x="774" y="1352" width="336" height="118" rx="9" class="sketch-box" stroke="var(--rose)"/>
+  <text x="790" y="1380" class="node-label" font-size="20">kavita</text>
+  <text x="790" y="1400" class="node-sub" font-size="11">10.10.20.250</text>
+  <text x="790" y="1420" class="node-sub" font-size="11" fill="var(--rose)">proxy 5000/tcp → LAN</text>
+  <text x="790" y="1440" class="node-sub" font-size="11">ro: Livros</text>
+  <text x="790" y="1458" class="node-sub" font-size="11">rw: /naspool/media/kavita/config</text>
+
+  <text x="70" y="1494" class="node-sub" font-size="11" fill="var(--ink-faint)">the library at /naspool/biblioteca is mounted READ-ONLY everywhere and never chowned — Samba stays its only writer, so a misbehaving service can't corrupt the archive</text>
+  <text x="70" y="1512" class="node-sub" font-size="11" fill="var(--ink-faint)">all three images run as root in-container (verified, not assumed), so the writable dirs chown to idmap base + 0 with no per-service offset · the three never talk to each other</text>
+
+  <!-- ============ PROJECT: coolify ============ -->
+  <text x="46" y="1556" class="zone-label" font-size="19" fill="var(--amber)">project: coolify — restricted, but nesting + syscall interception granted · coolify-br0 · 10.10.30.0/24</text>
+  <rect x="46" y="1568" width="1088" height="222" rx="10" fill="var(--amber-bg)" stroke="var(--amber)" stroke-width="1.4"/>
+
+  <rect x="70" y="1592" width="516" height="152" rx="10" class="sketch-box" stroke="var(--amber)"/>
+  <text x="86" y="1622" class="node-label" font-size="22">coolify</text>
+  <text x="566" y="1616" class="node-sub" font-size="11" text-anchor="end" fill="var(--ink-faint)">control plane</text>
+  <text x="86" y="1644" class="node-sub" font-size="12">10.10.30.200 · Debian 13 + nested Docker</text>
+  <text x="86" y="1664" class="node-sub" font-size="12" fill="var(--amber)">proxy 8000 · 6001 · 6002 tcp → LAN</text>
+  <text x="86" y="1684" class="node-sub" font-size="12">6 containers: app, db, redis, realtime, proxy, sentinel</text>
+  <text x="86" y="1704" class="node-sub" font-size="12">docker pool 10.99.0.0/16 (default 10.0.0.0/8 would</text>
+  <text x="86" y="1722" class="node-sub" font-size="12">have swallowed every bridge above)</text>
+
+  <rect x="610" y="1592" width="500" height="152" rx="10" class="sketch-box" stroke="var(--amber)"/>
+  <text x="626" y="1622" class="node-label" font-size="22">coolify-sandbox</text>
+  <text x="1090" y="1616" class="node-sub" font-size="11" text-anchor="end" fill="var(--ink-faint)">disposable "remote server"</text>
+  <text x="626" y="1644" class="node-sub" font-size="12">10.10.30.184 · Debian 13 + nested Docker</text>
+  <text x="626" y="1664" class="node-sub" font-size="12">sshd, key-only root — Coolify's own generated key</text>
+  <text x="626" y="1684" class="node-sub" font-size="12">docker pool 10.98.0.0/16 (separate daemon,</text>
+  <text x="626" y="1702" class="node-sub" font-size="12">allocates independently of the control plane)</text>
+  <text x="626" y="1726" class="node-sub" font-size="11" fill="var(--ink-faint)">exposes nothing to the host — apps need a proxy device</text>
+
+  <path d="M586,1668 Q598,1668 610,1668" class="flow-arrow" marker-end="url(#arrow)"/>
+  <text x="598" y="1658" class="flow-label" font-size="10" text-anchor="middle">ssh</text>
+
+  <text x="70" y="1766" class="node-sub" font-size="11" fill="var(--ink-faint)">no restricted.devices.disk grant at all — Incus itself refuses any host-path bind mount here ("Attaching disks not backed by a pool is forbidden"), so the sandbox structurally cannot reach /naspool</text>
+
+  <!-- ============ S3 / storage strip ============ -->
+  <rect x="46" y="1822" width="1088" height="120" rx="10" fill="var(--paper)" stroke="var(--ink-soft)" stroke-width="1.3"/>
+  <text x="70" y="1852" class="node-label" font-size="21">storage buckets — S3, served by Incus itself</text>
+  <text x="70" y="1876" class="node-sub" font-size="12">pool <tspan fill="var(--ink)">naspool-buckets</tspan> (btrfs) on the dedicated /naspool/incus-buckets subvolume, prepared by naspool-buckets.yml after a safety snapshot of /naspool</text>
+  <text x="70" y="1896" class="node-sub" font-size="12">bucket <tspan fill="var(--ink)">incus-bucket</tspan> · admin-role key imported from the one Incus auto-creates · reachable at <tspan fill="var(--teal)">https://&lt;homelab&gt;:8555/incus-bucket</tspan></text>
+  <text x="70" y="1920" class="node-sub" font-size="11" fill="var(--ink-faint)">no container involved at any point — this is the Incus daemon's own S3 listener, which is why it never appears in the project lanes above</text>
 </svg>
   </div>
 
   <div class="callout">
+    <b>Where the trust boundary is weakest.</b> The <code>coolify</code> project is the only one
+    granted <code>restricted.containers.nesting</code> <em>and</em>
+    <code>restricted.containers.interception</code> — two separate gates, both needed before a
+    nested Docker daemon will run. That is a genuinely broader kernel attack surface than anything
+    else here, and it is deliberate: Coolify exists as an <b>evaluation scratchpad</b>, not a place
+    to keep anything. Try an app from its large catalogue, then provision it properly with
+    OpenTofu + Ansible if it earns a permanent place. The compensating control is that the project
+    is granted no disk access at all, so neither container can be handed a path on the host.
+  </div>
+
+  <div class="callout is-red">
     <b>Why not macvlan on wlo1?</b> Tried first so headscale could get its own IPv6 straight from
-    the router. Confirmed working route + global address, but zero real reachability — WiFi
+    the router. Confirmed working route and global address, but zero real reachability — WiFi
     access points generally only accept frames for the one MAC they associated with, so a second
-    virtual MAC riding the same radio gets silently dropped. Switched to the default NAT'd
-    <code>incusbr0</code> bridge with three Incus <code>proxy</code> devices forwarding the host's
-    own ports into the container instead — the router firewall rules and DuckDNS now point at the
-    <b>homelab host's</b> address, not the container's.
+    virtual MAC riding the same radio gets silently dropped. Everything reachable from the LAN now
+    goes through an Incus <code>proxy</code> device on the <b>host's</b> own address instead, which
+    is why the router forwards to the host and never to a container.
   </div>
 
   <div class="notes">
     <div class="note">
-      <h3>headscale.tf</h3>
+      <h3>one bridge per project</h3>
       <p>
-        Plain <code>images:debian/12</code>, no cloud-init. <code>eth0</code> on
-        <code>incusbr0</code>; three <code>proxy</code> devices forward
-        <code>0.0.0.0:{443,80,3478}</code> on the host to <code>127.0.0.1</code> in the container.
+        Only OVN networks can be project-scoped, so every bridge lives in <code>default</code> and
+        isolation is enforced with <code>restricted.networks.access</code> instead. Ranges are
+        hand-allocated — <code>.10</code>, <code>.20</code>, <code>.30</code> — to stay clear of
+        <code>incusbr0</code> and of Docker's pools inside coolify.
       </p>
     </div>
     <div class="note">
-      <h3>headscale.yml</h3>
+      <h3>OCI vs system containers</h3>
       <p>
-        Connects via <code>community.general.incus</code> (root, <code>incus exec</code>) — no SSH,
-        no become. Bootstraps <code>python3</code> + <code>python3-debian</code>, adds Caddy's repo
-        via <code>deb822_repository</code>, installs a pinned headscale <code>.deb</code>.
+        Immich and media run as <b>OCI application containers</b>, provisioned by Ansible because
+        provider bug #348 breaks OCI image resolution. headscale, naspool-samba and both coolify
+        containers are plain <code>images:debian/13</code> <b>system containers</b>, unaffected, so
+        those are declared as real <code>incus_instance</code> resources.
       </p>
     </div>
     <div class="note">
-      <h3>incus.yml (fixed)</h3>
+      <h3>two ways in from outside</h3>
       <p>
-        The network/profile step was bundled inside a "run once if no storage pool exists" guard —
-        since the pool already existed, <code>incusbr0</code> silently never got created. Now
-        checked and created independently and idempotently.
+        Public: <code><headscale-domain></code> → Caddy → headscale, the only thing the router
+        forwards. Private: join the tailnet and reach the host directly — which is how the Incus
+        web UI on <code>:8443</code> is used off-LAN without opening anything.
       </p>
     </div>
     <div class="note">
-      <h3>What's live right now</h3>
+      <h3>where the data lives</h3>
       <p>
-        <code>https://<headscale-domain>/health</code> → <code>200 {"status":"pass"}</code>,
-        verified end-to-end from the public internet through Caddy's Let's Encrypt cert into
-        headscale.
+        Everything durable is under <code>/naspool</code> (BTRFS RAID1), never the system disk:
+        the Samba share, Immich's library and database, the media stack's config, and the S3
+        buckets' subvolume. The one exception is Coolify, which is disposable by design.
       </p>
     </div>
+  </div>
+
+  <div class="footnote">
+    Snapshot of the running system, drawn by hand rather than generated — verified against
+    <code>incus list</code>, <code>incus network list</code> and <code>incus config device show</code>
+    on the host. Redraw it when the topology changes meaningfully. Instance IPs come from DHCP on
+    each bridge and will drift; the ports and subnets are the stable part.
   </div>
 </div>

@@ -1,0 +1,141 @@
+---
+# Renders the services dashboard — a single static HTML page listing every
+# service on this homelab and the port it runs on — and serves it from the
+# Caddy that already runs inside the `headscale` Incus instance.
+#
+# WHY THIS EXISTS. Every port here was already documented, but only as prose
+# inside whichever reference file matched *how* the thing was provisioned
+# (references/ANSIBLE.md, OPENTOFU.md, INSTALL.md, ARCHITECTURE.html), so
+# answering "what's on 5000 again?" meant grepping four files. There was no
+# artifact organised by *service*, which is how the question actually gets
+# asked. This page is that artifact — and it's generated from
+# group_vars/all/00-defaults.yml rather than written by hand, because a
+# hand-maintained list is the same class of thing as the docs that already
+# drift.
+#
+# WHY NO DEDICATED PROJECT, unlike immich.yml/media.yml/coolify.yml. The
+# first cut gave the dashboard its own restricted Incus project, bridge and
+# nginx OCI container. That was structurally consistent, and far too much
+# machinery for one static file: Caddy is already running in the headscale
+# container, is already managed by this repo's own Caddyfile template, and
+# `file_server` is a first-class directive in it rather than a workaround. So
+# the page rides there, on a read-only bind mount and its own listener (both
+# declared in src/opentofu/headscale.tf).
+#
+# TWO PLAYS, and they connect differently — this is the important structural
+# note. The first targets the homelab HOST over SSH, because the file has to
+# be rendered on the host side of the bind mount. The second targets the
+# headscale INSTANCE via `incus exec` (community.general.incus), exactly like
+# headscale.yml and headplane.yml do, because that's where Caddy lives.
+# Neither play can do the other's job.
+#
+# PREREQUISITE: `tofu apply` must have added the `dashboard` disk device and
+# the `dashboard-web` proxy device to the headscale instance (headscale.tf).
+# Both are checked below rather than assumed, since a missing mount produces
+# a confusing 404 rather than an obvious failure.
+
+- name: Render the services dashboard on the homelab host
+  hosts: myhosts
+  become: true
+
+  tasks:
+    - name: Create the dashboard docroot on the host
+      ansible.builtin.file:
+        path: "{{ dashboard_root }}"
+        state: directory
+        # Chowned to the default project's idmap base, the same pattern as
+        # immich.yml/media.yml's bind-mounted directories: an unprivileged
+        # container sees host uid <base> as its own uid 0. Caddy actually
+        # reads the file as its own unprivileged user rather than as root,
+        # so world-readable would be enough — but matching the mount's shift
+        # keeps it predictable if that ever changes.
+        owner: "{{ dashboard_idmap_base }}"
+        group: "{{ dashboard_idmap_base }}"
+        mode: "0755"
+
+    - name: Render the dashboard page from group_vars
+      ansible.builtin.template:
+        src: services.html.j2
+        dest: "{{ dashboard_root }}/index.html"
+        owner: "{{ dashboard_idmap_base }}"
+        group: "{{ dashboard_idmap_base }}"
+        # World-readable: Caddy reads this as its own unprivileged user
+        # inside the container, not as root.
+        mode: "0644"
+
+    # The two devices come from headscale.tf, not from here — checked rather
+    # than created, so a forgotten `tofu apply` fails loudly with a useful
+    # message instead of silently serving a 404 from an empty docroot.
+    - name: Check the dashboard devices exist on the headscale instance
+      ansible.builtin.command: >-
+        incus config device get headscale {{ item }} type
+      loop:
+        - dashboard
+        - dashboard-web
+      register: dashboard_devices
+      changed_when: false
+      failed_when: false
+      become: false
+
+    - name: Fail early if OpenTofu hasn't been applied
+      ansible.builtin.fail:
+        msg: >-
+          The '{{ item.item }}' device is missing from the headscale instance.
+          Run `tofu apply` in src/opentofu/ first — headscale.tf declares both
+          the read-only /naspool/dashboard mount and the {{ dashboard_port }}
+          proxy device this playbook depends on.
+      loop: "{{ dashboard_devices.results }}"
+      when: item.rc != 0
+      loop_control:
+        label: "{{ item.item }}"
+
+
+- name: Serve the dashboard from the headscale instance's Caddy
+  hosts: headscale_hosts
+  gather_facts: false
+
+  tasks:
+    # Caddyfile.j2 is shared with headscale.yml and headplane.yml — all three
+    # render the same template, so it always contains every block regardless
+    # of which playbook wrote it last. That's why this task can safely
+    # rewrite the whole file rather than trying to append a fragment.
+    - name: Render the Caddyfile with the dashboard listener
+      ansible.builtin.template:
+        src: Caddyfile.j2
+        dest: /etc/caddy/Caddyfile
+        owner: root
+        group: root
+        mode: "0644"
+      register: caddyfile
+
+    # `caddy validate` before reloading: a malformed Caddyfile would take the
+    # public headscale endpoint down with it, and this container is the
+    # tailnet controller. Cheap insurance for a config change that isn't
+    # about headscale at all.
+    - name: Validate the Caddyfile before reloading
+      ansible.builtin.command: caddy validate --config /etc/caddy/Caddyfile
+      changed_when: false
+      when: caddyfile is changed
+
+    - name: Reload Caddy
+      ansible.builtin.systemd_service:
+        name: caddy
+        state: reloaded
+      when: caddyfile is changed
+
+    - name: Wait for the dashboard to answer
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ dashboard_internal_port }}/"
+        status_code: 200
+      register: dashboard_up
+      retries: 10
+      delay: 2
+      until: dashboard_up is succeeded
+      changed_when: false
+
+    - name: Report where the dashboard is
+      ansible.builtin.debug:
+        msg: >-
+          Dashboard is live at http://{{ dashboard_host }}:{{ dashboard_port }}/
+          — reachable from the LAN and over the tailnet. Re-run this playbook
+          after changing any port in group_vars/all/00-defaults.yml.

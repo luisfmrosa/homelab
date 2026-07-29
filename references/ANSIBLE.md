@@ -164,6 +164,18 @@ Kavita refuses any library whose root contains loose files ("One or more folders
 
   **The sandbox needs its own `daemon.json`, for a different reason than the control plane.** The sandbox never runs Coolify's installer (it's a deploy target, not a control plane), so nothing writes one for it and Docker falls back to its built-in default of `172.16.0.0/12`. That doesn't collide with anything here — but Docker's default carves out a **`/16` per network**, and Coolify creates one per project, so the range is exhausted after ~16 projects with an opaque "no available, non-overlapping IPv4 address pool" error mid-deploy. `coolify_sandbox_network_pool` pins it to `10.98.0.0/16` with `/24` sizing (256 networks), deliberately a *different* `/16` from the control plane's `10.99.0.0/16` — the two daemons allocate independently with no knowledge of each other, so a shared range would eventually have both pick the same subnet. Note that changing this only affects **newly created** networks; pre-existing ones keep their original subnet until recreated.
 
+  That last caveat bit once, and is worth recording. The sandbox's `coolify` network was created by the installer *before* the daemon restart that picked up `daemon.json`, so it kept Docker's default `172.18.0.0/16` while the `bridge` network (created after) correctly got `10.98.0.0/24`. Harmless — nothing on this host uses `172.16/12` — but not what the config said. Fixed by recreating it, which requires detaching the one container on it:
+
+  ```bash
+  incus exec coolify-sandbox --project coolify -- docker stop coolify-proxy
+  incus exec coolify-sandbox --project coolify -- docker network rm coolify
+  incus exec coolify-sandbox --project coolify -- docker network create --attachable coolify
+  incus exec coolify-sandbox --project coolify -- docker network connect coolify coolify-proxy
+  incus exec coolify-sandbox --project coolify -- docker start coolify-proxy
+  ```
+
+  Safe here because the network is `coolify.managed=true` (Coolify recreates it on demand), nothing on disk under `/data` referenced the old subnet, and the sandbox had no deployed apps. It came back on `10.98.1.0/24`. **Check for this after any change to a `default-address-pools` setting** — the daemon only applies it to networks it creates afterwards.
+
   **⚠️ `incus file push` silently writes to the wrong container if you omit the remote.** The target is `<remote>:<instance>/<path>`, and leaving the remote off is *not* an error — `incus file push f coolify/coolify-sandbox/etc/docker/daemon.json` parses as instance `coolify`, path `/coolify-sandbox/etc/docker/daemon.json`, dropping the file into the **control plane** at a nonsense path and returning **rc=0**, so Ansible reports success while the intended container is untouched. Confirmed in practice here. This playbook writes files with `incus exec <inst> -- sh -c "cat > <path>"` and the task's `stdin:` instead, where the instance is an unambiguous separate argument.
 
   **Two `incus exec` guard gotchas**, both found by the playbook failing its own idempotency check (`changed=3` on a second run):
@@ -205,6 +217,40 @@ incus config device add coolify-sandbox evil disk source=/naspool path=/naspool 
 ```
 
 **Teardown**, since disposability is the point: `incus delete --force coolify coolify-sandbox --project coolify`, or `tofu destroy` targeting the two instances. Nothing is written outside the containers — verified that the host keeps no Docker and no `/data`.
+
+* `src/ansible/playbooks/dashboard.yml` — renders the **services dashboard**: one static HTML page listing every service on this homelab and the port it runs on, served by the Caddy that already runs inside the `headscale` instance.
+
+  **What it's for.** Every port here was already documented, but only as prose inside whichever reference file matched *how* the thing was provisioned (this file, `OPENTOFU.md`, `INSTALL.md`, `ARCHITECTURE.html`), so answering "what's on 5000 again?" meant grepping four files. There was no artifact organised by **service**, which is how the question actually gets asked.
+
+  **The page is generated, not written.** It's rendered from `templates/services.html.j2` using the port variables already in `group_vars/all/00-defaults.yml` — so the defaults stay the single source of truth and the page is a build artifact of them. A hand-maintained list would be the same class of thing as the docs that already drift, which is the whole problem. **Never edit the rendered `index.html`;** change the variable and re-run.
+
+  **No dedicated Incus project, unlike `immich.yml`/`media.yml`/`coolify.yml`.** The first cut gave the dashboard its own restricted project, bridge and nginx OCI container — structurally consistent, and far too much machinery for one static file. Caddy is already running in the `headscale` container, is already managed by this repo's own `Caddyfile.j2`, and `file_server` is a first-class directive in it rather than a workaround. Reusing it costs two devices on `headscale.tf` instead of a fifth project. Accepted tradeoff: that container is no longer purely "the tailnet controller", and the page's availability is tied to it.
+
+  **Two plays, connecting differently** — the structural point of the file:
+  * The first targets `[myhosts]` over SSH with `become: true`, because the page has to be rendered on the **host** side of the bind mount.
+  * The second targets `[headscale_hosts]` via `incus exec`, like `headscale.yml`/`headplane.yml`, because that's where Caddy lives. It re-renders the shared `Caddyfile.j2`, runs `caddy validate` before reloading (a malformed Caddyfile would take the public headscale endpoint down with it), and polls until the page answers `200`.
+
+  **⚠️ The dashboard binds `8081` inside the container, not `8080`.** Port `8080` in the `headscale` container is already **headscale's own plain-HTTP API listener** — the one the public `<headscale-domain>` Caddy block reverse-proxies to. Binding the dashboard there would collide with it. The proxy device therefore maps host `8080` → container `8081` (`dashboard_port` vs `dashboard_internal_port`). Also occupied inside that container: `3000` headplane, `2019` Caddy's admin API, `9090` headscale metrics.
+
+  **⚠️ It's a separate Caddy listener, not a path under the public site block.** That block is internet-facing; this page is a complete map of every internal service and port here. Serving it there — even behind a `remote_ip` matcher — would leave one typo between that map and the public internet. On its own bare `:8081` listener it gets exactly the exposure of every other service: the host's own address, so LAN and tailnet, and nothing the router forwards. Note also that publishing it would gain little, since every link on it points at `homelab:PORT`, which only resolves on the LAN or tailnet.
+
+  **No embedded webfonts,** unlike `references/ARCHITECTURE.html`. That file is opened straight off the filesystem so it must carry its own ~770KB of base64 fonts; this one is served over HTTP, where a system font stack costs nothing and keeps three quarters of a megabyte of base64 out of git.
+
+  **No render timestamp in the page,** deliberately — `ansible_date_time` changes every run, so embedding it would rewrite the file each time and report `changed` forever, failing the standing `changed=0` bar. The page is a pure function of the variables.
+
+  The two devices it depends on (the read-only `/naspool/dashboard` mount and the `8080` proxy) are declared in `src/opentofu/headscale.tf`, and the playbook **checks they exist and fails with a useful message** if `tofu apply` hasn't been run — a missing mount otherwise produces a confusing 404 rather than an obvious failure.
+
+  Run with: `ansible-playbook -i src/ansible/hosts src/ansible/playbooks/dashboard.yml -K` (needs `-K` for sudo, for the docroot creation/render tasks on the host only).
+
+#### Verifying the dashboard
+
+```bash
+incus config device show headscale | grep -A3 dashboard   # both devices present
+curl -sI http://<homelab-ip>:8080/                        # 200
+incus exec headscale -- touch /var/www/dashboard/x        # must fail: read-only file system
+```
+
+Then re-run the playbook and confirm **`changed=0`**. The property the whole design exists for: change one port in `00-defaults.yml`, re-run, and the page reflects it.
 
 ### Renewing the headplane API key
 

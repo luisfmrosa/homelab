@@ -246,3 +246,51 @@ coolify_network_pool_size: 24
 # projects with an opaque "no available non-overlapping IPv4 address pool"
 # error mid-deploy. A /24 size gives 256 instead.
 coolify_sandbox_network_pool: "10.98.0.0/16"
+
+# --- Services dashboard (see dashboard.yml) ---
+#
+# A single generated HTML page listing every service below and the port it
+# runs on. THIS FILE IS ITS SOURCE OF TRUTH: the page is rendered from the
+# variables here, so changing a port below and re-running dashboard.yml is
+# all it takes to update it. Never hand-edit the rendered HTML — that's the
+# drift this exists to prevent.
+#
+# Served by the Caddy already running in the headscale container (see the
+# ":{{ dashboard_port }}" block in templates/Caddyfile.j2), from a read-only
+# bind mount declared in headscale.tf. There's deliberately no dashboard
+# Incus project: Caddy is already here and file_server is a first-class
+# directive, so a fifth project and an nginx container would be machinery for
+# one static file.
+# Port on the HOST — this is the one you browse to, http://homelab:8080.
+dashboard_port: 8080
+
+# Port Caddy actually binds INSIDE the headscale container, which the proxy
+# device in headscale.tf forwards dashboard_port to. Deliberately NOT the
+# same number: 8080 inside that container is already headscale's own
+# plain-HTTP API listener (the public Caddy block reverse-proxies to it), so
+# binding here would collide. Also taken in there: 3000 headplane, 2019
+# Caddy's admin API, 9090 headscale metrics.
+dashboard_internal_port: 8081
+
+# Host directory the page is rendered into, bind-mounted read-only into the
+# headscale container at /var/www/dashboard. Under /naspool like everything
+# else durable, though this one is cheap to regenerate.
+dashboard_root: /naspool/dashboard
+
+# Host-side base of the DEFAULT project's unprivileged UID/GID shift — the
+# headscale container lives in `default`, not in a project of its own, so
+# this is not necessarily the same value as immich_idmap_base or
+# media_idmap_base. Verify with:
+#   incus config get headscale volatile.idmap.current
+# and update this if the "Hostid" reported there differs.
+#
+# Caddy reads the docroot as its own unprivileged user, so the rendered file
+# only needs to be world-readable, not owned by that user — but the directory
+# is chowned to this base anyway so the mount behaves predictably.
+dashboard_idmap_base: 1000000
+
+# LAN hostname used to build the links on the dashboard. The real IP stays
+# out of git (see CLAUDE.md), and this resolves on the LAN via the router's
+# DNS, so it's what the page's URLs point at. Override in the gitignored
+# 01-local.yml if a different name or a literal IP is wanted instead.
+dashboard_host: homelab

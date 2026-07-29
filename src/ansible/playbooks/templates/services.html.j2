@@ -1,0 +1,362 @@
+{#
+  Managed by Ansible (src/ansible/playbooks/dashboard.yml).
+
+  THE RENDERED PAGE IS NOT A SOURCE FILE. It's generated from the port
+  variables in group_vars/all/00-defaults.yml and written to
+  {{ dashboard_root }}/index.html on the homelab host. To change a port,
+  change it there and re-run dashboard.yml — editing the rendered HTML is
+  the exact drift this page exists to prevent.
+
+  Deliberately NO embedded webfonts, unlike references/ARCHITECTURE.html.
+  That file is opened straight off the filesystem, so it has to carry its
+  own ~770KB of base64 fonts. This one is served over HTTP by Caddy, where
+  a system font stack costs nothing, keeps the template reviewable, and
+  keeps three quarters of a megabyte of base64 out of git.
+#}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Homelab Services</title>
+<meta name="description" content="What's running on the homelab, and on which port.">
+<style>
+:root {
+  --paper: #f8f6f2;
+  --card: #fffdfa;
+  --ink: #1e1e1e;
+  --ink-soft: #4a4740;
+  --ink-faint: #8a8578;
+  --line: #e2ddd1;
+
+  --teal: #0c8599;   --teal-bg: #e2f6f5;
+  --green: #2b8a3e;  --green-bg: #e9f7ec;
+  --rose: #a61e4d;   --rose-bg: #fff0f4;
+  --amber: #a16207;  --amber-bg: #fdf4e3;
+
+  --shadow: rgba(30, 26, 20, 0.07);
+  --shadow-lift: rgba(30, 26, 20, 0.13);
+
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, "JetBrains Mono",
+          "Cascadia Mono", Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #1a1a1e;
+    --card: #232227;
+    --ink: #e8e6e1;
+    --ink-soft: #b8b4aa;
+    --ink-faint: #726d61;
+    --line: #3a3833;
+
+    --teal: #66d9e8;   --teal-bg: #123638;
+    --green: #8ce99a;  --green-bg: #16351e;
+    --rose: #f783ac;   --rose-bg: #3d1a28;
+    --amber: #ffd43b;  --amber-bg: #3a2f11;
+
+    --shadow: rgba(0, 0, 0, 0.3);
+    --shadow-lift: rgba(0, 0, 0, 0.5);
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--mono);
+  min-height: 100vh;
+  padding: 2.5rem 1.25rem 4rem;
+  -webkit-font-smoothing: antialiased;
+}
+
+.page { max-width: 1020px; margin: 0 auto; }
+
+header { margin-bottom: 2.25rem; }
+
+h1 {
+  font-size: clamp(1.7rem, 4vw, 2.2rem);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin: 0 0 0.5rem;
+  text-wrap: balance;
+}
+
+.subtitle {
+  font-size: 0.82rem;
+  color: var(--ink-soft);
+  line-height: 1.65;
+  max-width: 64ch;
+  margin: 0;
+}
+.subtitle code {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.05em 0.35em;
+}
+
+.group { margin-top: 2.25rem; }
+
+.group-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding-bottom: 0.55rem;
+  border-bottom: 1.5px solid var(--line);
+  margin-bottom: 1.1rem;
+}
+
+.group-name {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--accent);
+  letter-spacing: -0.01em;
+}
+
+.group-meta {
+  font-size: 0.72rem;
+  color: var(--ink-faint);
+  margin-left: auto;
+}
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
+  gap: 0.9rem;
+}
+
+.card {
+  display: block;
+  text-decoration: none;
+  color: inherit;
+  background: var(--card);
+  border: 1.5px solid var(--line);
+  border-left: 4px solid var(--accent);
+  border-radius: 9px;
+  padding: 0.95rem 1.05rem 1rem;
+  box-shadow: 0 1px 2px var(--shadow);
+  transition: transform 0.14s ease, box-shadow 0.14s ease, border-color 0.14s ease;
+}
+a.card:hover, a.card:focus-visible {
+  transform: translateY(-2px);
+  box-shadow: 0 5px 16px var(--shadow-lift);
+  border-color: var(--accent);
+  border-left-color: var(--accent);
+}
+a.card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.card-top {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  margin-bottom: 0.35rem;
+}
+
+.card-name { font-size: 0.95rem; font-weight: 700; letter-spacing: -0.01em; }
+
+.port {
+  margin-left: auto;
+  font-size: 0.75rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+  background: var(--accent-bg);
+  border-radius: 5px;
+  padding: 0.15em 0.5em;
+  flex: none;
+}
+
+.card-desc {
+  font-size: 0.76rem;
+  line-height: 1.55;
+  color: var(--ink-soft);
+  margin: 0 0 0.55rem;
+}
+.card-desc code {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 0 0.25em;
+}
+
+.card-url {
+  font-size: 0.72rem;
+  color: var(--ink-faint);
+  word-break: break-all;
+  line-height: 1.4;
+}
+
+.card-src {
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px dashed var(--line);
+  font-size: 0.68rem;
+  color: var(--ink-faint);
+}
+
+.footnote {
+  margin-top: 3rem;
+  padding-top: 1.1rem;
+  border-top: 1.5px solid var(--line);
+  font-size: 0.74rem;
+  color: var(--ink-faint);
+  line-height: 1.7;
+  max-width: 76ch;
+}
+.footnote code {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.05em 0.35em;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card { transition: none; }
+  a.card:hover, a.card:focus-visible { transform: none; }
+}
+</style>
+</head>
+<body>
+<div class="page">
+  <header>
+    <h1>What's running here</h1>
+    <p class="subtitle">
+      Every service on the homelab, grouped by the Incus project that owns it.
+      Reachable from the LAN, and from anywhere on the tailnet. Generated from
+      <code>group_vars/all/00-defaults.yml</code> — don't edit this page, edit the
+      variables and re-run <code>dashboard.yml</code>.
+    </p>
+  </header>
+
+  <section class="group" style="--accent: var(--teal); --accent-bg: var(--teal-bg)">
+    <div class="group-head">
+      <span class="group-name">host &amp; default project</span>
+      <span class="group-meta">incusbr0 &middot; 10.183.191.0/24</span>
+    </div>
+    <div class="cards">
+
+      <a class="card" href="https://{{ dashboard_host }}:{{ incus_https_address.split(':')[1] }}">
+        <div class="card-top"><span class="card-name">Incus web UI</span><span class="port">{{ incus_https_address.split(':')[1] }}</span></div>
+        <p class="card-desc">Manage every container, network and storage pool on the box. Also the API the laptop's OpenTofu talks to.</p>
+        <div class="card-url">https://{{ dashboard_host }}:{{ incus_https_address.split(':')[1] }}</div>
+        <div class="card-src">incus.yml</div>
+      </a>
+
+      <a class="card" href="https://{{ dashboard_host }}:{{ incus_storage_buckets_address.split(':')[1] }}/incus-bucket">
+        <div class="card-top"><span class="card-name">S3 buckets</span><span class="port">{{ incus_storage_buckets_address.split(':')[1] }}</span></div>
+        <p class="card-desc">S3-compatible storage served by Incus itself, backed by the RAID1 pool. No container involved at any point.</p>
+        <div class="card-url">https://{{ dashboard_host }}:{{ incus_storage_buckets_address.split(':')[1] }}/incus-bucket</div>
+        <div class="card-src">naspool-buckets.tf &middot; naspool-buckets.yml</div>
+      </a>
+
+      <div class="card">
+        <div class="card-top"><span class="card-name">Samba</span><span class="port">445</span></div>
+        <p class="card-desc">The file share — <code>/naspool</code> read-write, from the LAN or over the tailnet. Sole writer of the media library.</p>
+        <div class="card-url">\\{{ dashboard_host }}\naspool</div>
+        <div class="card-src">naspool.tf &middot; samba.yml</div>
+      </div>
+
+      <a class="card" href="https://{{ headscale_domain }}/admin">
+        <div class="card-top"><span class="card-name">headplane</span><span class="port">443</span></div>
+        <p class="card-desc">Web UI for the tailnet: see which devices are connected, approve new ones, hand out preauth keys.</p>
+        <div class="card-url">https://{{ headscale_domain }}/admin</div>
+        <div class="card-src">headscale.tf &middot; headplane.yml</div>
+      </a>
+
+      <a class="card" href="http://{{ dashboard_host }}:{{ dashboard_port }}/">
+        <div class="card-top"><span class="card-name">This page</span><span class="port">{{ dashboard_port }}</span></div>
+        <p class="card-desc">Served by the Caddy in the headscale container, off a read-only mount. Regenerated by re-running its playbook.</p>
+        <div class="card-url">http://{{ dashboard_host }}:{{ dashboard_port }}/</div>
+        <div class="card-src">headscale.tf &middot; dashboard.yml</div>
+      </a>
+
+    </div>
+  </section>
+
+  <section class="group" style="--accent: var(--green); --accent-bg: var(--green-bg)">
+    <div class="group-head">
+      <span class="group-name">immich</span>
+      <span class="group-meta">immich-br0 &middot; 10.10.10.0/24 &middot; restricted</span>
+    </div>
+    <div class="cards">
+
+      <a class="card" href="http://{{ dashboard_host }}:2283">
+        <div class="card-top"><span class="card-name">Immich</span><span class="port">2283</span></div>
+        <p class="card-desc">Photos and videos, with face and object search. The other three containers in this project back it and aren't exposed.</p>
+        <div class="card-url">http://{{ dashboard_host }}:2283</div>
+        <div class="card-src">immich.tf &middot; immich.yml</div>
+      </a>
+
+    </div>
+  </section>
+
+  <section class="group" style="--accent: var(--rose); --accent-bg: var(--rose-bg)">
+    <div class="group-head">
+      <span class="group-name">media</span>
+      <span class="group-meta">media-br0 &middot; 10.10.20.0/24 &middot; restricted</span>
+    </div>
+    <div class="cards">
+
+      <a class="card" href="http://{{ dashboard_host }}:{{ jellyfin_port }}">
+        <div class="card-top"><span class="card-name">Jellyfin</span><span class="port">{{ jellyfin_port }}</span></div>
+        <p class="card-desc">Films and video, transcoded on the Intel iGPU. Reads <code>Filmes</code> and <code>Videos</code>, read-only.</p>
+        <div class="card-url">http://{{ dashboard_host }}:{{ jellyfin_port }}</div>
+        <div class="card-src">media.tf &middot; media.yml</div>
+      </a>
+
+      <a class="card" href="http://{{ dashboard_host }}:{{ navidrome_port }}">
+        <div class="card-top"><span class="card-name">Navidrome</span><span class="port">{{ navidrome_port }}</span></div>
+        <p class="card-desc">Music streaming, Subsonic-compatible so most phone players work. Reads <code>Musicas</code> and the iTunes library.</p>
+        <div class="card-url">http://{{ dashboard_host }}:{{ navidrome_port }}</div>
+        <div class="card-src">media.tf &middot; media.yml</div>
+      </a>
+
+      <a class="card" href="http://{{ dashboard_host }}:{{ kavita_port }}">
+        <div class="card-top"><span class="card-name">Kavita</span><span class="port">{{ kavita_port }}</span></div>
+        <p class="card-desc">Books, comics and PDFs, with reading progress synced across devices. Reads <code>Livros</code>, read-only.</p>
+        <div class="card-url">http://{{ dashboard_host }}:{{ kavita_port }}</div>
+        <div class="card-src">media.tf &middot; media.yml</div>
+      </a>
+
+    </div>
+  </section>
+
+  <section class="group" style="--accent: var(--amber); --accent-bg: var(--amber-bg)">
+    <div class="group-head">
+      <span class="group-name">coolify</span>
+      <span class="group-meta">coolify-br0 &middot; 10.10.30.0/24 &middot; scratchpad</span>
+    </div>
+    <div class="cards">
+
+      <a class="card" href="http://{{ dashboard_host }}:{{ coolify_port }}">
+        <div class="card-top"><span class="card-name">Coolify</span><span class="port">{{ coolify_port }}</span></div>
+        <p class="card-desc">Try an app from a big catalogue in a couple of clicks. Anything worth keeping gets rebuilt properly with OpenTofu and Ansible — nothing here is permanent.</p>
+        <div class="card-url">http://{{ dashboard_host }}:{{ coolify_port }}</div>
+        <div class="card-src">coolify.tf &middot; coolify.yml</div>
+      </a>
+
+    </div>
+  </section>
+
+  <div class="footnote">
+    Only <code>{{ headscale_domain }}</code> is exposed to the public internet; every other
+    service here is bound to this host's own address, so the LAN and the tailnet reach it and
+    the router forwards nothing further. The links above resolve on the LAN and on the tailnet
+    only.
+    <br><br>
+    Generated from <code>group_vars/all/00-defaults.yml</code> by <code>dashboard.yml</code>.
+    For how it all fits together, see <code>references/ARCHITECTURE.html</code> in the repo.
+    {#
+      Deliberately no render timestamp here. ansible_date_time changes on
+      every run, so embedding it would rewrite the file each time and report
+      `changed` forever — failing this repo's standing `changed=0`
+      idempotency bar for a second run. The page's content is a pure function
+      of the variables; if nothing in them changed, nothing here should.
+    #}
+  </div>
+</div>
+</body>
+</html>
