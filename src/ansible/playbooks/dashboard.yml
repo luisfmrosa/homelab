@@ -89,6 +89,33 @@
       loop_control:
         label: "{{ item.item }}"
 
+    # dashboard_port lives in group_vars, but the device that actually
+    # forwards it is declared in OpenTofu (headscale.tf), and the two tools
+    # share no variable store. Changing it here and re-running only this
+    # playbook updates the page's *text* while the proxy device keeps
+    # forwarding the old port — leaving the page confidently wrong, which is
+    # worse than leaving it stale. So check, rather than trust.
+    - name: Read the port the proxy device actually forwards
+      ansible.builtin.command: >-
+        incus config device get headscale dashboard-web listen
+      register: dashboard_listen
+      changed_when: false
+      become: false
+
+    - name: Fail if the proxy device disagrees with dashboard_port
+      ansible.builtin.fail:
+        msg: >-
+          dashboard_port is {{ dashboard_port }}, but the proxy device on the
+          headscale instance forwards {{ dashboard_listen.stdout }}. The page
+          would advertise a port nothing listens on.
+
+          Both tools need this value and neither can see the other's: set
+          dashboard_port to the same number in BOTH
+          src/ansible/group_vars/all/00-defaults.yml and
+          src/opentofu/variables.tf, run `tofu apply` in src/opentofu/, then
+          re-run this playbook.
+      when: dashboard_listen.stdout | trim != 'tcp:0.0.0.0:' ~ dashboard_port
+
 
 - name: Serve the dashboard from the headscale instance's Caddy
   hosts: headscale_hosts

@@ -100,18 +100,24 @@ resource "incus_instance" "headscale" {
   # this homelab: the host's own address, so LAN and tailnet, and nothing the
   # router forwards. See the ":8081" block in templates/Caddyfile.j2.
   #
-  # Note the ports are 8080 on the HOST but 8081 INSIDE the container. 8080
-  # is not free in here — it's headscale's own plain-HTTP API listener, which
-  # the public Caddy block reverse-proxies to. Binding the dashboard there
-  # would have collided with it. (Also in use inside this container: 3000
-  # headplane, 2019 Caddy's admin API, 9090 headscale metrics.)
+  # Note the two ports differ. The container-side one is NOT 8080 — that's
+  # headscale's own plain-HTTP API listener in here, which the public Caddy
+  # block reverse-proxies to, so binding the dashboard there would collide.
+  # (Also in use inside this container: 3000 headplane, 2019 Caddy's admin
+  # API, 9090 headscale metrics.)
+  #
+  # Both come from variables that MUST be kept in step with their namesakes
+  # in src/ansible/group_vars/all/00-defaults.yml — see the long note in
+  # variables.tf. Ansible renders the port into the page's text; this device
+  # is what actually forwards it. Changing only the Ansible side produces a
+  # page that confidently prints a port nothing is listening on.
   device {
     name = "dashboard-web"
     type = "proxy"
 
     properties = {
-      listen  = "tcp:0.0.0.0:8080"
-      connect = "tcp:127.0.0.1:8081"
+      listen  = "tcp:0.0.0.0:${var.dashboard_port}"
+      connect = "tcp:127.0.0.1:${var.dashboard_internal_port}"
     }
   }
 }

@@ -261,7 +261,18 @@ coolify_sandbox_network_pool: "10.98.0.0/16"
 # Incus project: Caddy is already here and file_server is a first-class
 # directive, so a fifth project and an nginx container would be machinery for
 # one static file.
-# Port on the HOST — this is the one you browse to, http://homelab:8080.
+# Port on the HOST — this is the one you browse to.
+#
+# ⚠️ DUPLICATED IN src/opentofu/variables.tf, and both must be changed
+# together. Ansible renders this number into the page's text; the Incus proxy
+# device that actually forwards it is declared in OpenTofu (headscale.tf),
+# and the two tools share no variable store. Changing only this side gives a
+# page that confidently advertises a port nothing is listening on — worse
+# than a stale one, and exactly what happened the first time this was
+# changed. dashboard.yml now checks the live device and refuses to render a
+# page it can't back up, but the check only fires once you run it.
+#
+# To change the port: edit BOTH files, `tofu apply`, then re-run the playbook.
 dashboard_port: 8080
 
 # Port Caddy actually binds INSIDE the headscale container, which the proxy
