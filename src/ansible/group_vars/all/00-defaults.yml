@@ -31,7 +31,16 @@ incus_storage_buckets_address: "0.0.0.0:8555"
 # issues/renews its Let's Encrypt certificate for this name automatically).
 # Must resolve to this container's public IPv6 (see the "headscale" section
 # in references/INSTALL.md for the manual DuckDNS + router steps).
-headscale_domain: <headscale-domain>
+#
+# ⚠️ The real value lives in the gitignored 01-local.yml, same convention as
+# samba_users/headscale_users above. It's kept out of git deliberately: it
+# resolves to this house's public IPv6, and this repo documents in detail what
+# sits behind it — headscale + Caddy, which ports the router forwards, which
+# versions are pinned. Publishing the map next to its own address turns
+# "someone has to find this host" into "searching for duckdns finds it".
+# (The name isn't a secret — Let's Encrypt puts it in public CT logs — but
+# there's no reason to make the pairing convenient.)
+headscale_domain: CHANGEME.duckdns.org
 
 # STUN port for headscale's embedded DERP relay (NAT traversal between
 # tailnet clients). Must be forwarded on the router, see INSTALL.md.

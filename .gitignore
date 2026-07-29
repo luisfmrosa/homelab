@@ -10,3 +10,10 @@ src/opentofu/.terraform.lock.hcl
 src/opentofu/terraform.tfstate
 src/opentofu/terraform.tfstate.backup
 src/opentofu/terraform.tfvars
+
+# OpenTofu also writes timestamped state backups (terraform.tfstate.<epoch>.backup)
+# which the two patterns above do NOT match — one of these was committed by
+# accident and had to be removed. Glob covers every variant.
+src/opentofu/*.tfstate
+src/opentofu/*.tfstate.*
+src/opentofu/*.tfbackup

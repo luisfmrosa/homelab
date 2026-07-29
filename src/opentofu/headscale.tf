@@ -91,7 +91,7 @@ resource "incus_instance" "headscale" {
   }
 
   # Deliberately a SEPARATE listener from the public :443 site block, not a
-  # path under it. That block is <headscale-domain> — forwarded by the
+  # path under it. That block is the public headscale domain — forwarded by the
   # router and reachable from the open internet — and this page is a map of
   # every internal service and port. Serving it there, even behind a
   # remote_ip matcher, puts one typo between the map and the public.
