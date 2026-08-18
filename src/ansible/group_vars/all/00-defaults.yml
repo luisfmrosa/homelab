@@ -127,9 +127,24 @@ immich_db_username: immich
 
 # Pinned Immich release version, matching across the server and
 # machine-learning images since Immich requires both on the same release.
-# Bump, re-run immich.yml, and check the Immich release notes for any
-# required migration steps. https://github.com/immich-app/immich/releases
-immich_version: release
+# Check the release notes for required migration steps before bumping:
+# https://github.com/immich-app/immich/releases
+#
+# Deliberately a concrete tag rather than the floating "release" this used
+# to be. Two reasons, both learned the hard way: with "release" the repo no
+# longer answers "what version is deployed?" (you had to go look at the
+# running server), and a rebuild would silently jump versions.
+#
+# BUMPING IS NOT JUST THIS LINE. immich.yml only creates instances that
+# don't already exist, so re-running it after a bump reports changed=0 and
+# leaves the old version running. Delete the two stateless app instances
+# first, then re-run:
+#   incus delete --force immich-server immich-ml --project immich
+# Safe because neither holds state — uploads and model-cache are bind
+# mounts on /naspool, and the database lives in the separate immich-db
+# instance, which this does NOT touch. Immich runs its own schema
+# migrations when immich-server next starts.
+immich_version: v3.1.0
 
 # Immich's own Postgres image (VectorChord + pgvector bundled), versioned
 # independently of immich_version above since it changes far less often —

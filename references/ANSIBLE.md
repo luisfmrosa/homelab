@@ -291,3 +291,29 @@ For each hop:
 
 Repeat for each intervening minor version until reaching the target release. Also check the target release's notes for a **minimum required Tailscale client version** — the Android/Windows/etc. apps enrolled as nodes may need updating too, or they'll fail to reconnect once the server's floor rises past their version.
 
+## Upgrading Immich
+
+**Bumping `immich_version` alone does nothing.** `immich.yml` creates each instance only when it doesn't already exist, so re-running it after a bump reports `changed=0` and leaves the old version running. The two app instances must be deleted first so the playbook recreates them from the new tag.
+
+This is safe because `immich-server` and `immich-ml` hold **no state** — their only devices are bind mounts (`/naspool/immich/upload`, `/naspool/immich/model-cache`), and the database lives in the separate `immich-db` instance, which this procedure never touches.
+
+1. **Check the release notes** for breaking changes and migration steps: https://github.com/immich-app/immich/releases
+2. **Check whether Postgres moved too.** `immich_postgres_image` is pinned separately since it changes far less often. Compare it against `image:` in upstream's [`docker/docker-compose.yml`](https://github.com/immich-app/immich/blob/main/docker/docker-compose.yml) — if the pinned tag there differs, bump both in the same pass.
+3. **Bump `immich_version`** in `src/ansible/group_vars/all/00-defaults.yml` to the target tag (e.g. `v3.1.0`).
+4. **Delete the two stateless app instances:**
+   ```bash
+   incus delete --force immich-server immich-ml --project immich
+   ```
+   Immich is down from here until step 5 completes.
+5. **Re-run the playbook** (from WSL; needs `-K`, the homelab requires a sudo password):
+   ```bash
+   ansible-playbook -i src/ansible/hosts src/ansible/playbooks/immich.yml -K
+   ```
+   Immich runs its own schema migrations when `immich-server` next starts.
+6. **Verify** the version actually moved — the API is authoritative, `incus config get <instance> image.version` is empty for these OCI instances:
+   ```bash
+   incus exec immich-server --project immich -- curl -s http://localhost:2283/api/server/version
+   ```
+   Then open the web UI and confirm the library is intact, rather than trusting the version number alone.
+
+**Pin a concrete tag, never `release`.** This variable was `release` (a floating tag) until 2026-08-17. Two problems that caused: the repo stopped being able to answer "what version is deployed?" — you had to query the running server — and any rebuild would silently jump versions. The delete-and-recreate above is precisely what makes a floating tag dangerous here.
