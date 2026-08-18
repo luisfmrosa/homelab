@@ -480,6 +480,6 @@ Node registration itself is **not** automated — a device needs an interactive 
 
 #### Step 5: headplane (web UI)
 
-Headplane is reachable at `https://<mydomain>.duckdns.org/admin` once `src/ansible/playbooks/headplane.yml` has run (see `references/ANSIBLE.md`) — no additional manual/router steps needed, it reuses the same ports and Let's Encrypt certificate as headscale itself. Log in using the API key generated for it (`incus exec headscale -- cat /etc/headplane/api_key`).
+Headplane is reachable at `https://<mydomain>.duckdns.org/admin/` (note the trailing slash — without it Caddy's `handle /admin/*` doesn't match and the request goes to headscale instead) once `src/ansible/playbooks/headplane.yml` has run (see `references/ANSIBLE.md`) — no additional manual/router steps needed, it reuses the same ports and Let's Encrypt certificate as headscale itself. Log in using the API key generated for it (`incus exec headscale -- cat /etc/headplane/api_key`).
 
 **END**

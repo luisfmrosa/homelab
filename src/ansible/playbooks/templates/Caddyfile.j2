@@ -10,6 +10,13 @@
 # (not `handle_path`) so the /admin prefix reaches headplane intact, since
 # headplane's own routing expects to still see it.
 {{ headscale_domain }} {
+    # Bare /admin doesn't match `handle /admin/*` below, so without this it
+    # falls through to headscale's API and returns a bare 404 — verified.
+    # Send it to the canonical slashed form instead. 301 rather than 302: the
+    # path isn't going to move, and letting browsers cache it means the
+    # round-trip happens once.
+    redir /admin /admin/ 301
+
     handle /admin/* {
         reverse_proxy 127.0.0.1:{{ headplane_port }}
     }
