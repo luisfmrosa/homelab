@@ -1,18 +1,23 @@
 ---
-# Deploys the media stack — Jellyfin (video), Navidrome (music) and Kavita
-# (ebooks/PDFs) — as three independent Incus OCI "application containers"
-# inside the isolated "media" Incus project created by
-# src/opentofu/media.tf.
+# Deploys the media stack — Jellyfin (video), Navidrome (music), Kavita
+# (ebooks/PDFs) — plus Wallos (subscription tracker), as four independent
+# Incus OCI "application containers" inside the isolated "media" Incus
+# project created by src/opentofu/media.tf.
 #
 # Same structural pattern as immich.yml (see that playbook for the full
 # rationale on each idiom), with four deliberate differences called out at
 # the point where they occur below:
 #   1. The media library is mounted READ-ONLY and is NOT chowned.
-#   2. All three images run as root in-container, so the writable config
-#      directories chown to media_idmap_base + 0 with no per-service offset.
+#   2. Jellyfin/Navidrome/Kavita all run as root in-container, so their
+#      writable config directories chown to media_idmap_base + 0 with no
+#      per-service offset. Wallos is the exception — its php-fpm runs as
+#      uid 82 and cannot be made to run as root, so it gets its own.
 #   3. Jellyfin gets a `gpu` device (needs restricted.devices.gpu=allow).
-#   4. Unlike Immich's 4 services, these three never talk to each other —
+#   4. Unlike Immich's 4 services, these four never talk to each other —
 #      no inter-instance DNS/hostname wiring is needed at all.
+#
+# Wallos is the one service here with no connection to /naspool/biblioteca;
+# it's in this project for its trust domain and audience, not its data.
 #
 # Targets the homelab host directly over SSH (myhosts), not
 # community.general.incus/`incus exec` like headscale.yml/samba.yml, because
@@ -43,6 +48,8 @@
         - "{{ jellyfin_cache_dir }}"
         - "{{ navidrome_data_dir }}"
         - "{{ kavita_config_dir }}"
+        - "{{ wallos_db_dir }}"
+        - "{{ wallos_logos_dir }}"
       become: true
 
     # Same unprivileged-container ownership problem immich.yml documents at
@@ -53,11 +60,10 @@
     # which media.tf doesn't grant either). Pre-chowning the host path to
     # the shifted UID is the only remaining option.
     #
-    # Simpler than Immich's case though: all three images run every process
-    # as root (uid/gid 0) in-container — verified by launching each image as
-    # a throwaway instance and running `id` — so this is a single chown to
-    # media_idmap_base + 0 rather than Immich's three different per-service
-    # offsets (999 for postgres, 1000 for node, 0 for immich-ml).
+    # Simpler than Immich's case for three of the four: Jellyfin, Navidrome
+    # and Kavita run every process as root (uid/gid 0) in-container —
+    # verified by launching each image as a throwaway instance and running
+    # `id` — so those chown to media_idmap_base + 0 with no offset.
     - name: Chown the media config directories to the containers' shifted root
       ansible.builtin.file:
         path: "{{ item }}"
@@ -69,6 +75,28 @@
         - "{{ jellyfin_cache_dir }}"
         - "{{ navidrome_data_dir }}"
         - "{{ kavita_config_dir }}"
+      become: true
+
+    # Wallos is the exception, and needs its own offset like Immich's
+    # postgres/node ones. Its php-fpm workers run as www-data = uid 82
+    # (Alpine's numbering, not Debian's 33), so its two directories chown to
+    # media_idmap_base + 82 instead.
+    #
+    # ⚠️ Do NOT "simplify" this by folding it into the loop above with
+    # PUID=0. That was tried: php-fpm hard-refuses to run a worker pool as
+    # root ("[pool www] please specify user and group other than root") and
+    # exits, while nginx keeps running — so the container looks healthy and
+    # every request returns 502 Bad Gateway. See wallos_puid in
+    # 00-defaults.yml.
+    - name: Chown the Wallos directories to its shifted www-data uid
+      ansible.builtin.file:
+        path: "{{ item }}"
+        owner: "{{ media_idmap_base + wallos_puid }}"
+        group: "{{ media_idmap_base + wallos_pgid }}"
+        recurse: true
+      loop:
+        - "{{ wallos_db_dir }}"
+        - "{{ wallos_logos_dir }}"
       become: true
 
     # NOTE: there is deliberately no equivalent chown for the library
@@ -336,3 +364,82 @@
           connect=tcp:127.0.0.1:{{ kavita_port }}
           --project media
       when: "'kavita-web' not in kavita_devices_post.stdout_lines"
+
+    # ---------------------------------------------------------------- #
+    # Wallos — subscription / recurring-payment tracker                 #
+    # ---------------------------------------------------------------- #
+    # The only service in this project that touches none of
+    # /naspool/biblioteca — it has no library to index, just its own
+    # SQLite database. Upstream ships it as a single container (nginx +
+    # php-fpm + crond under dumb-init), so there's no compose stack to
+    # decompose here, unlike Immich's four services.
+    #
+    # PUID/PGID are set at init time rather than after: startup.sh reads
+    # them once on boot to usermod www-data, so setting them on an
+    # already-started instance would need a restart to take effect. They're
+    # passed explicitly rather than left to the image's own defaults so the
+    # value stays visibly in step with the chown offset above — the two must
+    # always agree, and 0 is not a legal value for either (see the chown
+    # task's warning).
+    - name: Init the wallos instance
+      ansible.builtin.command:
+        cmd: >-
+          incus init {{ wallos_image }} wallos
+          --project media
+          -c environment.PUID={{ wallos_puid }}
+          -c environment.PGID={{ wallos_pgid }}
+          -c environment.TZ={{ wallos_timezone }}
+      when: "'wallos' not in (media_instances.stdout | from_json | map(attribute='name') | list)"
+
+    - name: Check wallos's current devices
+      ansible.builtin.command: incus config device list wallos --project media
+      register: wallos_devices
+      changed_when: false
+
+    # Both paths are hardcoded upstream (they're where nginx's docroot
+    # expects them), so the container-side path must not be changed. The
+    # host side is empty on first run — startup.sh's createdatabase.php
+    # seeds wallos.db and migrate.php brings the schema up, so no template
+    # database needs copying in.
+    - name: Add wallos's database disk device
+      ansible.builtin.command:
+        cmd: >-
+          incus config device add wallos db disk
+          source={{ wallos_db_dir }} path=/var/www/html/db
+          --project media
+      when: "'db' not in wallos_devices.stdout_lines"
+
+    - name: Add wallos's logo uploads disk device
+      ansible.builtin.command:
+        cmd: >-
+          incus config device add wallos logos disk
+          source={{ wallos_logos_dir }} path=/var/www/html/images/uploads/logos
+          --project media
+      when: "'logos' not in wallos_devices.stdout_lines"
+
+    - name: Check whether wallos is running
+      ansible.builtin.command: incus list wallos --project media -f json
+      register: wallos_state
+      changed_when: false
+
+    - name: Start the wallos instance
+      ansible.builtin.command: incus start wallos --project media
+      when: (wallos_state.stdout | from_json | first).status != 'Running'
+
+    - name: Re-check wallos's devices before adding the web proxy
+      ansible.builtin.command: incus config device list wallos --project media
+      register: wallos_devices_post
+      changed_when: false
+
+    # The one non-identity port mapping in this project: Wallos's nginx
+    # listens on plain port 80 in-container, so the host port and the
+    # container port differ (unlike Jellyfin/Navidrome/Kavita, which all
+    # listen on their own high port).
+    - name: Expose the Wallos web UI to the host
+      ansible.builtin.command:
+        cmd: >-
+          incus config device add wallos wallos-web proxy
+          listen=tcp:0.0.0.0:{{ wallos_port }}
+          connect=tcp:127.0.0.1:{{ wallos_internal_port }}
+          --project media
+      when: "'wallos-web' not in wallos_devices_post.stdout_lines"

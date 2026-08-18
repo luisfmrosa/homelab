@@ -181,6 +181,12 @@ jellyfin_config_dir: "{{ media_config_root }}/jellyfin/config"
 jellyfin_cache_dir: "{{ media_config_root }}/jellyfin/cache"
 navidrome_data_dir: "{{ media_config_root }}/navidrome/data"
 kavita_config_dir: "{{ media_config_root }}/kavita/config"
+# Wallos keeps its SQLite database and its uploaded/fetched subscription
+# logos in two separate directories upstream, so both are bind-mounted
+# individually rather than one parent — matching the two volumes in
+# upstream's docker-compose.yml.
+wallos_db_dir: "{{ media_config_root }}/wallos/db"
+wallos_logos_dir: "{{ media_config_root }}/wallos/logos"
 
 # Host-side base of the "media" Incus project's unprivileged UID/GID shift.
 # Assigned per-project, NOT global — this happens to match Immich's
@@ -188,10 +194,19 @@ kavita_config_dir: "{{ media_config_root }}/kavita/config"
 #   incus config get jellyfin volatile.idmap.current --project media
 # and update this if the "Hostid" reported there differs.
 #
-# Unlike Immich (postgres=999, node=1000), all three media images run their
-# processes as root (uid/gid 0) in-container — verified by launching each
-# image throwaway and running `id`. So the writable directories above are
-# chowned to exactly this base + 0, with no per-service offset.
+# Unlike Immich (postgres=999, node=1000), every media image here ends up
+# running its processes as root (uid/gid 0) in-container, so Jellyfin's,
+# Navidrome's and Kavita's writable directories are chowned to exactly this
+# base + 0, with no per-service offset. Verified by launching each image
+# throwaway and running `id` — not assumed.
+#
+# Wallos is the exception and does NOT get base + 0. Its php-fpm workers
+# run as www-data = uid 82 on Alpine (NOT Debian's 33), so its two
+# directories chown to base + 82 instead — closer to Immich's per-service
+# offsets than to the uniform rule the other three follow here. Note `id`
+# alone doesn't reveal this: it reports uid 0 because PID 1 is root, and
+# only `ps aux` shows the php-fpm pool running as www-data. See
+# wallos_puid below and media.yml's Wallos section.
 #
 # The read-only library mounts need no chown at all: /naspool/biblioteca is
 # already world-readable (dirs drwxr-xr-x, files -rw-r--r--), so the
@@ -205,6 +220,12 @@ media_idmap_base: 1000000
 jellyfin_port: 8096
 navidrome_port: 4533
 kavita_port: 5000
+# Wallos serves plain HTTP on port 80 inside its container (nginx), unlike
+# the other three which listen on a high port. 8282 is upstream's own
+# suggested host port and was free here — so the proxy device maps
+# host 8282 -> container 80, the only non-identity mapping in this project.
+wallos_port: 8282
+wallos_internal_port: 80
 
 # OCI images for the three services. Jellyfin's official image is on
 # ghcr.io; the other two publish to docker.io — both remotes are already
@@ -223,6 +244,34 @@ jellyfin_image: "ghcr:jellyfin/jellyfin"
 jellyfin_gpu_pci: "0000:00:02.0"
 navidrome_image: "docker:deluan/navidrome:latest"
 kavita_image: "docker:jvmilazz0/kavita:latest"
+# Wallos — self-hosted subscription/recurring-payment tracker. Upstream
+# publishes only to docker.io, under the maintainer's own namespace
+# (bellamy/) rather than the GitHub org's (ellite/Wallos).
+wallos_image: "docker:bellamy/wallos:latest"
+
+# The in-container uid/gid Wallos's php-fpm workers run as, and therefore
+# the offset its two bind-mounted directories must be chowned to
+# (media_idmap_base + this). 82 is Alpine's www-data — NOT Debian's 33.
+#
+# ⚠️ MUST NOT be 0, and this was tried: setting PUID=0 makes startup.sh
+# usermod www-data to uid 0, and php-fpm then refuses to start at all with
+# "[pool www] please specify user and group other than root" — its own
+# hardcoded refusal to run a worker pool as root. nginx still comes up, so
+# the symptom is a 502 Bad Gateway rather than a container that fails
+# visibly. Wallos is therefore the one service in this project needing a
+# per-service chown offset, like Immich's 999/1000; the alternative was
+# breaking the application to keep the offsets uniform.
+#
+# startup.sh does still read these to usermod/groupmod www-data, so they
+# remain the right knob — just not with a value of 0.
+wallos_puid: 82
+wallos_pgid: 82
+
+# Timezone matters here in a way it doesn't for the media services: Wallos
+# schedules renewal notifications and computes "next payment" dates from
+# local time, so a wrong TZ shifts when those fire. Matches the homelab
+# host's own timezone.
+wallos_timezone: "Europe/Paris"
 
 # --- Coolify (see coolify.yml/coolify.tf) ---
 

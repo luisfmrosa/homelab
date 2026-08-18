@@ -1,16 +1,24 @@
-# Isolation for the media stack (Jellyfin, Navidrome, Kavita): its own
-# Incus project and a dedicated bridge network, exactly the same pattern as
+# Isolation for the media stack (Jellyfin, Navidrome, Kavita) plus Wallos:
+# its own Incus project and a dedicated bridge network, exactly the same
+# pattern as
 # immich.tf — see that file's header for the full reasoning on why a plain
 # bridge network can't live inside a non-default project (only OVN can), and
 # why `features.profiles = true` plus an explicitly-declared default profile
 # are both required before a project can be `restricted`.
 #
-# All three services are single, independent OCI "application containers"
+# Every service here is a single, independent OCI "application container"
 # with no inter-service traffic at all (unlike Immich's server <-> db/redis/ml
 # chatter) — they're grouped into one project because they share a trust
-# domain, a data source (/naspool/biblioteca) and an audience, not because
-# they need to talk to each other. One project keeps the restriction set
-# declared once instead of three times over.
+# domain and an audience, not because they need to talk to each other. One
+# project keeps the restriction set declared once instead of four times over.
+#
+# Wallos (subscription tracker) is the odd one out: it shares the audience
+# and the single-container shape, but not the data source — it never touches
+# /naspool/biblioteca, only its own /naspool/media/wallos. It's here rather
+# than in a project of its own because a fifth restricted project for one
+# 69MB container repeats machinery for no isolation gain. Worth revisiting
+# if it ever holds data you'd want walled off from the media services, since
+# what it tracks is financial rather than a film library.
 #
 # As with Immich, the instances themselves are NOT declared here as
 # incus_instance resources — the lxc/incus provider has an open bug
@@ -50,10 +58,12 @@ resource "incus_project" "media" {
     #     READ-ONLY (see media.yml). This is the user's own archive, also
     #     exported read-write over Samba by naspool-samba; the media
     #     services deliberately get no write access to it at all.
-    #   /naspool/media — writable config/cache/database for the three
-    #     services themselves, created fresh by media.yml. Kept entirely
-    #     separate from the library so a service can never scribble into
-    #     the archive it's indexing.
+    #   /naspool/media — writable config/cache/database for the services
+    #     themselves, created fresh by media.yml. Kept entirely separate
+    #     from the library so a service can never scribble into the archive
+    #     it's indexing. Wallos's SQLite database and logo uploads live
+    #     under here too (/naspool/media/wallos/), so it needs no new path
+    #     prefix — the existing grant already covers it.
     "restricted.devices.disk"       = "allow"
     "restricted.devices.disk.paths" = "/naspool/biblioteca,/naspool/media"
     # Needed for each service's web UI proxy device (Jellyfin 8096,
