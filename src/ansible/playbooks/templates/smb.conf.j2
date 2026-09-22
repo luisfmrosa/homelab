@@ -9,6 +9,17 @@
     log file = /var/log/samba/log.%m
     max log size = 1000
 
+    # Usershares (net usershare) are never used here — the only share is
+    # [naspool] below, defined in this file. Left enabled, smbd tries to
+    # stat /var/lib/samba/usershares/ on every connection; if that directory
+    # or a stale entry in it ever becomes unreadable (observed in practice:
+    # "process_usershare_file: stat ... failed: Permission denied" in
+    # log.<client>), share enumeration breaks for every client and Windows'
+    # Map Network Drive dialog just silently re-prompts for credentials
+    # instead of showing a real error. Disabling the feature outright avoids
+    # smbd touching that path at all.
+    usershare max shares = 0
+
 [naspool]
     path = /naspool
     browsable = yes
