@@ -88,7 +88,7 @@ This document describes what is configured in the homelab using Ansible.
   * Run with: `ansible-playbook -i src/ansible/hosts src/ansible/playbooks/immich.yml -K` (needs `-K` for sudo, for the directory-creation/chown tasks only).
   * Reachable at `http://<homelab-ip>:2283`. Verified end-to-end: all 4 instances running, Postgres accepting connections with the `vchord`/`vector` extensions loaded, inter-container DNS resolving, and the web UI returning a normal `200 OK`.
 
-* `src/ansible/playbooks/media.yml` — targets `[myhosts]` (the homelab host itself, over SSH), same reasoning as `immich.yml`: the instances don't exist yet for `incus exec` to target. Deploys four independent Incus OCI application containers into the isolated `media` project created by `src/opentofu/media.tf` — `jellyfin` (`ghcr:jellyfin/jellyfin`, video), `navidrome` (`docker:deluan/navidrome:latest`, music), `kavita` (`docker:jvmilazz0/kavita:latest`, ebooks/PDFs) and `wallos` (`docker:bellamy/wallos:latest`, subscription tracker). Structurally the same as `immich.yml` (`incus init` → `incus config device add` → `incus start`, every step guarded by checking its **own** state fresh rather than a single pre-play "does the instance exist" snapshot), with four deliberate differences:
+* `src/ansible/playbooks/media.yml` — targets `[myhosts]` (the homelab host itself, over SSH), same reasoning as `immich.yml`: the instances don't exist yet for `incus exec` to target. Deploys four independent Incus OCI application containers into the isolated `media` project created by `src/opentofu/media.tf` — `jellyfin` (`ghcr:jellyfin/jellyfin`, video), `navidrome` (`docker:deluan/navidrome:latest`, music), `kavita` (`docker:jvmilazz0/kavita:{{ kavita_version }}`, ebooks/PDFs — pinned, unlike the other three which still float on `:latest`; see "Upgrading Kavita" below) and `wallos` (`docker:bellamy/wallos:latest`, subscription tracker). Structurally the same as `immich.yml` (`incus init` → `incus config device add` → `incus start`, every step guarded by checking its **own** state fresh rather than a single pre-play "does the instance exist" snapshot), with four deliberate differences:
   * **The media library is mounted read-only and is never chowned.** Each library device carries `readonly=true`, so the services can read and stream `/naspool/biblioteca` but cannot write to it — Samba (`naspool-samba`) remains the only writer. No chown is applied to those paths either: they're already world-readable (dirs `drwxr-xr-x`, files `-rw-r--r--`, owned by uid 993), so the containers' shifted root can read them as-is, and chowning would rewrite the ownership of the user's own archive. This is the opposite of `immich.yml`, where every bind mount is writable and must be pre-chowned.
   * **Jellyfin, Navidrome and Kavita all run as root (uid/gid 0) in-container** — verified by launching each image as a throwaway instance and running `id`, not assumed — so their config directories chown to `media_idmap_base + 0` with no offset.
   * ⚠️ **Wallos is the exception, and needs `media_idmap_base + 82`.** Its php-fpm workers run as `www-data` = **uid 82** (Alpine's numbering, *not* Debian's 33). Note `id` alone is misleading here: it reports uid 0 because PID 1 is root — the real answer came from `ps aux`, which shows `php-fpm: pool www` running as `www-data`. Its instance sets `PUID=82`/`PGID=82`, which upstream's `startup.sh` reads on boot to `usermod` www-data before `chown -R`'ing its data directories.
@@ -324,4 +324,24 @@ This is safe because `immich-server` and `immich-ml` hold **no state** — their
    Then open the web UI and confirm the library is intact, rather than trusting the version number alone.
 
 **Pin a concrete tag, never `release`.** This variable was `release` (a floating tag) until 2026-08-17. Two problems that caused: the repo stopped being able to answer "what version is deployed?" — you had to query the running server — and any rebuild would silently jump versions. The delete-and-recreate above is precisely what makes a floating tag dangerous here.
+
+## Upgrading Kavita
+
+Same underlying problem as Immich: `media.yml` creates the `kavita` instance only when it doesn't already exist, so re-running it after bumping `kavita_version` reports `changed=0` and leaves the old image running — this is true even when the tag was `:latest`, since Incus only pulls the image once, at first creation.
+
+Safe to delete and recreate: `kavita`'s only device besides its library mounts is the `config` bind mount (`{{ kavita_config_dir }}` → `/kavita/config`, hardcoded upstream), which holds its database/settings on `/naspool` and isn't touched by deleting the instance.
+
+1. **Check the current release**: https://hub.docker.com/r/jvmilazz0/kavita/tags (or the GitHub releases page) for the latest stable tag — avoid `nightly`.
+2. **Bump `kavita_version`** in `src/ansible/group_vars/all/00-defaults.yml`.
+3. **Delete the instance:**
+   ```bash
+   incus delete --force kavita --project media
+   ```
+4. **Re-run the playbook:**
+   ```bash
+   ansible-playbook -i src/ansible/hosts src/ansible/playbooks/media.yml
+   ```
+5. **Verify** the web UI comes up at `kavita_port` and the library is still intact before considering it done.
+
+`jellyfin_image` and `navidrome_image` still float on `:latest`/no tag — same "only pulled once" caveat applies to them too, but they haven't been pinned yet.
 

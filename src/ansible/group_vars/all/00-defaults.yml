@@ -243,7 +243,18 @@ jellyfin_image: "ghcr:jellyfin/jellyfin"
 # GPU device" (confirmed in practice). `pci=` is unambiguous either way.
 jellyfin_gpu_pci: "0000:00:02.0"
 navidrome_image: "docker:deluan/navidrome:latest"
-kavita_image: "docker:jvmilazz0/kavita:latest"
+
+# Pinned rather than ":latest" (unlike navidrome_image/jellyfin_image above)
+# so a version bump is a deliberate, visible change here instead of silently
+# going stale — media.yml only creates the kavita instance if it doesn't
+# already exist, so even ":latest" only ever gets pulled once, at first
+# creation. To upgrade: bump this, then delete and recreate the instance
+# (its config is untouched — it's a separate bind-mounted disk device):
+#   incus delete --force kavita --project media
+# and re-run media.yml. Check https://hub.docker.com/r/jvmilazz0/kavita/tags
+# for the current release.
+kavita_version: "0.9.1"
+kavita_image: "docker:jvmilazz0/kavita:{{ kavita_version }}"
 # Wallos — self-hosted subscription/recurring-payment tracker. Upstream
 # publishes only to docker.io, under the maintainer's own namespace
 # (bellamy/) rather than the GitHub org's (ellite/Wallos).
