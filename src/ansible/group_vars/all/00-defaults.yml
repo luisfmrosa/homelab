@@ -42,6 +42,16 @@ incus_storage_buckets_address: "0.0.0.0:8555"
 # there's no reason to make the pairing convenient.)
 headscale_domain: CHANGEME.duckdns.org
 
+# DuckDNS account token, used by duckdns.yml to keep headscale_domain's AAAA
+# record on the host's current public IPv6. Shown at the top of
+# https://www.duckdns.org once signed in. A secret: set the real value in the
+# gitignored 01-local.yml, never here.
+duckdns_token: CHANGEME
+
+# Host interface whose public IPv6 gets published, and how often to re-check.
+duckdns_interface: wlo1
+duckdns_interval: 5min
+
 # STUN port for headscale's embedded DERP relay (NAT traversal between
 # tailnet clients). Must be forwarded on the router, see INSTALL.md.
 headscale_derp_stun_port: 3478

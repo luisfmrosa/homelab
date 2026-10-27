@@ -1,0 +1,117 @@
+#!/usr/bin/python3
+# {{ ansible_managed }}
+#
+# Publishes this host's current public IPv6 as the AAAA record of
+# {{ headscale_domain }} on DuckDNS. Run every few minutes by
+# duckdns-update.timer; installed by src/ansible/playbooks/duckdns.yml.
+#
+# Picking the address is the whole point of this script, because the obvious
+# rules are wrong here:
+#
+# * "The non-deprecated /128" (the router's static DHCPv6 lease) is wrong
+#   after the ISP changes the prefix: the router keeps renewing the lease on
+#   the OLD prefix, so the host holds a fresh-looking address that nothing
+#   routes to anymore.
+# * The current prefix is the one on the host's SLAAC /64 address, since the
+#   router builds it from the prefix it advertises right now. The static
+#   lease is preferred (the router's firewall rules point at it) only when it
+#   sits on that prefix; otherwise the SLAAC address is published instead,
+#   which is stable per prefix (stable-privacy, not a temporary address).
+
+import ipaddress
+import subprocess
+import sys
+
+ENV_FILE = "/etc/duckdns/env"
+STATE_FILE = "/var/lib/duckdns/last"
+SKIP_FLAGS = {"deprecated", "tentative", "dadfailed", "temporary"}
+
+
+def load_env(path):
+    env = {}
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#"):
+                key, _, value = line.partition("=")
+                env[key] = value
+    return env
+
+
+def usable_addresses(interface):
+    out = subprocess.run(
+        ["ip", "-6", "-o", "addr", "show", "dev", interface, "scope", "global"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    for line in out.splitlines():
+        fields = line.split()
+        addr = ipaddress.IPv6Interface(fields[3])
+        # is_global also drops ULAs (fd00::/8), e.g. Incus's own bridges.
+        if SKIP_FLAGS.isdisjoint(fields[4:]) and addr.ip.is_global:
+            yield addr
+
+
+def pick(interface):
+    addrs = list(usable_addresses(interface))
+    slaac = [a for a in addrs if a.network.prefixlen == 64]
+    if not slaac:
+        return None, None
+    current_prefix = slaac[0].network
+    for a in addrs:
+        if a.network.prefixlen == 128 and a.ip in current_prefix:
+            return a.ip, "static DHCPv6 lease"
+    stale = [str(a.ip) for a in addrs if a.network.prefixlen == 128]
+    note = "SLAAC address"
+    if stale:
+        note += (f"; static lease {', '.join(stale)} is not on the current prefix "
+                 f"{current_prefix}, recreate it on the router")
+    return slaac[0].ip, note
+
+
+def main():
+    env = load_env(ENV_FILE)
+    addr, source = pick(env["DUCKDNS_INTERFACE"])
+    if addr is None:
+        print(f"no usable global IPv6 on {env['DUCKDNS_INTERFACE']}, leaving DNS alone",
+              file=sys.stderr)
+        return 1
+
+    try:
+        with open(STATE_FILE) as f:
+            last = f.read().strip()
+    except FileNotFoundError:
+        last = ""
+    if str(addr) == last:
+        print(f"unchanged: {addr} ({source})")
+        return 0
+
+    # The URL (with the token) goes in on stdin rather than argv, so it never
+    # shows up in `ps`.
+    #
+    # www.duckdns.org has no AAAA record, so this call always leaves over
+    # IPv4. With ip= absent DuckDNS would normally fill the A record from the
+    # caller's address (the ISP's shared IPv4, which makes clients hang, see
+    # INSTALL.md), but passing ipv6= switches that detection off and leaves
+    # the A record alone (verified 2026-10-27; duckdns.yml re-checks it).
+    # Don't "simplify" to ip=<ipv6>: the spec says ip= accepts IPv6, but in
+    # practice DuckDNS answers KO.
+    url = (f"https://www.duckdns.org/update?domains={env['DUCKDNS_SUBDOMAIN']}"
+           f"&token={env['DUCKDNS_TOKEN']}&ipv6={addr}&verbose=true")
+    result = subprocess.run(
+        ["wget", "-q", "-T", "20", "-O", "-", "-i", "-"],
+        input=url, capture_output=True, text=True,
+    )
+    reply = result.stdout.split()
+    if result.returncode != 0 or not reply or reply[0] != "OK":
+        print(f"DuckDNS update failed (wget exit {result.returncode}): {' '.join(reply)}",
+              file=sys.stderr)
+        return 1
+
+    with open(STATE_FILE, "w") as f:
+        f.write(f"{addr}\n")
+    print(f"published {addr} ({source}): {' '.join(reply[1:])}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

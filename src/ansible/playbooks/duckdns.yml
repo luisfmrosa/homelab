@@ -1,0 +1,134 @@
+---
+# Keeps the DuckDNS AAAA record for headscale_domain pointed at the homelab
+# host's current public IPv6, so an ISP prefix change no longer cuts every
+# tailnet client off from headscale until someone notices and updates DuckDNS
+# by hand. Installs a small script plus a systemd timer that re-checks every
+# few minutes and only calls DuckDNS when the address actually changed.
+#
+# Targets the homelab host over SSH, not the headscale container: the address
+# being published is the host's own (headscale is reached through Incus proxy
+# devices on the host, see headscale.tf), and the container has no route to
+# it anyway.
+#
+# Doesn't cover the router: its static DHCPv6 lease and firewall rules store
+# a full address, so they still need recreating on a prefix change (see
+# "If the ISP changes the IPv6 prefix" in references/INSTALL.md). Until then, the
+# script publishes the host's SLAAC address on the new prefix and logs which
+# lease is stale.
+- name: Keep DuckDNS pointed at the homelab host's public IPv6
+  hosts: myhosts
+  become: true
+
+  vars:
+    duckdns_subdomain: "{{ headscale_domain | regex_replace('\\.duckdns\\.org$', '') }}"
+
+  tasks:
+    - name: Refuse to run without a real token and DuckDNS domain
+      ansible.builtin.assert:
+        that:
+          - duckdns_token != "CHANGEME"
+          - headscale_domain is match(".+\\.duckdns\\.org$")
+          - "'CHANGEME' not in headscale_domain"
+        fail_msg: >-
+          Set duckdns_token and headscale_domain in the gitignored
+          group_vars/all/01-local.yml first (see 00-defaults.yml).
+
+    - name: Ensure /etc/duckdns exists
+      ansible.builtin.file:
+        path: /etc/duckdns
+        state: directory
+        mode: "0700"
+
+    - name: Write the DuckDNS credentials file
+      ansible.builtin.copy:
+        dest: /etc/duckdns/env
+        mode: "0600"
+        content: |
+          # Managed by src/ansible/playbooks/duckdns.yml, do not edit by hand.
+          DUCKDNS_SUBDOMAIN={{ duckdns_subdomain }}
+          DUCKDNS_TOKEN={{ duckdns_token }}
+          DUCKDNS_INTERFACE={{ duckdns_interface }}
+      no_log: true
+
+    - name: Install the update script
+      ansible.builtin.template:
+        src: templates/duckdns-update.py.j2
+        dest: /usr/local/bin/duckdns-update
+        mode: "0755"
+
+    - name: Install the update service
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/duckdns-update.service
+        mode: "0644"
+        content: |
+          # Managed by src/ansible/playbooks/duckdns.yml, do not edit by hand.
+          [Unit]
+          Description=Publish this host's public IPv6 to DuckDNS
+          Wants=network-online.target
+          After=network-online.target
+
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/local/bin/duckdns-update
+          StateDirectory=duckdns
+
+    - name: Install the update timer
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/duckdns-update.timer
+        mode: "0644"
+        content: |
+          # Managed by src/ansible/playbooks/duckdns.yml, do not edit by hand.
+          [Unit]
+          Description=Re-check the DuckDNS AAAA record every {{ duckdns_interval }}
+
+          [Timer]
+          OnBootSec=1min
+          OnUnitActiveSec={{ duckdns_interval }}
+
+          [Install]
+          WantedBy=timers.target
+
+    - name: Enable and start the timer
+      ansible.builtin.systemd:
+        name: duckdns-update.timer
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    # The script only calls DuckDNS when the address differs from its cached
+    # last-published value, so a deploy clears the cache to force one real
+    # update — otherwise a record changed by hand would never be corrected.
+    - name: Forget the last published address
+      ansible.builtin.file:
+        path: /var/lib/duckdns/last
+        state: absent
+
+    - name: Publish now
+      ansible.builtin.systemd:
+        name: duckdns-update.service
+        state: started
+
+    - name: Show what was published
+      ansible.builtin.command: journalctl -u duckdns-update.service -n 1 -o cat --no-pager
+      register: duckdns_log
+      changed_when: false
+
+    - name: Report it
+      ansible.builtin.debug:
+        msg: "{{ duckdns_log.stdout }}"
+
+    # Asked of DuckDNS's own nameserver, so no resolver cache gets in the way.
+    - name: Check the domain carries no A record
+      ansible.builtin.command: dig +short A {{ headscale_domain }} @ns1.duckdns.org
+      register: duckdns_a
+      changed_when: false
+      failed_when: duckdns_a.stdout | trim | length > 0
+
+    - name: Check the AAAA record
+      ansible.builtin.command: dig +short AAAA {{ headscale_domain }} @ns1.duckdns.org
+      register: duckdns_aaaa
+      changed_when: false
+
+    - name: Report it
+      ansible.builtin.debug:
+        msg: "AAAA {{ headscale_domain }} -> {{ duckdns_aaaa.stdout }}"

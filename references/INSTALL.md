@@ -448,11 +448,20 @@ Forward/allow the following from the internet to the **homelab host's** IPv6 (no
 
 #### Step 3: create/update the DuckDNS domain
 
-1. On https://www.duckdns.org, sign in and point the domain (already registered; the real name lives in the gitignored `01-local.yml` as `headscale_domain`) at the homelab host's IPv6 from Step 1 (DuckDNS supports an AAAA-only update — see their site for the exact update URL/token).
+1. On https://www.duckdns.org, sign in and point the domain (already registered; the real name lives in the gitignored `01-local.yml` as `headscale_domain`) at the homelab host's IPv6 from Step 1 (DuckDNS supports an AAAA-only update — see their site for the exact update URL/token). **This is now automated** by `src/ansible/playbooks/duckdns.yml` (see `references/ANSIBLE.md`): copy the token shown on duckdns.org into `01-local.yml` as `duckdns_token` and run that playbook instead of updating by hand.
    * **Make sure no stale A (IPv4) record is left on the domain.** DuckDNS keeps the IPv4 and IPv6 records independent, so updating only the AAAA record leaves any old A record in place. Clients that try IPv4 first (many Tailscale/Tailscale-compatible clients, including the Android and Windows apps) will then hang indefinitely trying to connect to a dead IPv4 address before ever falling back to the working IPv6 one — this caused node enrollment to silently stall on both platforms even though a plain HTTPS request (e.g. `/health`) succeeded. Clear the A record on DuckDNS's site (leave the IPv4 field blank) if one exists.
 2. If the domain name ever changes, update it in these files:
    * `src/ansible/group_vars/all/00-defaults.yml` — `headscale_domain`
    * Re-run `ansible-playbook -i src/ansible/hosts src/ansible/playbooks/headscale.yml` to regenerate the Caddyfile and headscale `config.yaml` (`server_url`, `dns.base_domain`) from the new value and re-issue the Let's Encrypt certificate.
+
+#### If the ISP changes the IPv6 prefix
+
+Symptom: every tailnet client goes offline at once, with `tailscale status` showing a timeout on `https://<mydomain>/key` against an IPv6 address whose prefix differs from the laptop's own. Happened on 2026-10-25.
+
+1. DuckDNS follows by itself within `duckdns_interval` (see `duckdns.yml`), publishing the host's SLAAC address on the new prefix until step 2 is done. Check with `journalctl -u duckdns-update.service -n 5`.
+2. **The router's static DHCPv6 lease does not follow.** Its "Créer bail statique" dialog only takes a suffix, but it stores the full address at creation time and keeps renewing it on the old prefix. Delete the IPv6 lease under LAN → Baux statiques and recreate it (same MAC, same suffix) so it picks up the current prefix, then `sudo systemctl restart networking` on the homelab. The next DuckDNS run switches back to the lease address.
+3. Check the router firewall rules from Step 2 for the same problem, if they store a full address. Symptom if they do: clients on the LAN connect fine (their traffic never crosses the router's firewall) while clients outside it time out with "context deadline exceeded" on `/key`.
+4. Check LAN → DNS local → "DNS local v6" too. An AAAA entry for `homelab` there holds a full address and goes stale the same way; Windows prefers it over the IPv4 entry, so `ssh luis@homelab` from the laptop times out. Deleting it is simpler than keeping it current — the IPv4 entry is enough on the LAN.
 
 #### Step 4: create headscale users
 
